@@ -79,7 +79,7 @@ async function ensureTables(cfg) {
     bookings: ['booking_ref VARCHAR(20)', 'an VARCHAR(20)', 'ward VARCHAR(100)', 'doctor_name VARCHAR(200)', 'deposit_amount DECIMAL(10,2) DEFAULT 0', 'contact_name VARCHAR(200)', 'contact_phone VARCHAR(50)', 'priority_type VARCHAR(200)'],
     room_types: ['food_price_per_day DECIMAL(10,2) DEFAULT 0'],
     rooms: ['ward VARCHAR(100)'],
-    waiting_list: ['an VARCHAR(20)', 'ward VARCHAR(100)', 'doctor_name VARCHAR(200)', 'contact_name VARCHAR(200)', 'contact_phone VARCHAR(50)', 'priority_type VARCHAR(200)', 'roomtype_code VARCHAR(50)', 'roomtype_name VARCHAR(200)', 'check_in_date VARCHAR(50)']
+    waiting_list: ['an VARCHAR(20)', 'ward VARCHAR(100)', 'doctor_name VARCHAR(200)', 'contact_name VARCHAR(200)', 'contact_phone VARCHAR(50)', 'priority_type VARCHAR(200)', 'roomtype_code VARCHAR(50)', 'roomtype_name VARCHAR(200)', 'check_in_date VARCHAR(50)', 'no_room_reason TEXT']
   };
   for (const [tbl, cols] of Object.entries(alterCols)) {
     for (const col of cols) {
@@ -161,11 +161,12 @@ const SQL_AVAILABLE_BEDS = `
 `;
 
 const SQL_ALL_BEDS = `
-  SELECT w.name as ward, rt.name as roomtype, rt.roomtype as roomtype_code, b.bedno, r.ward as ward_code, r.roomno
+  SELECT w.name as ward, rt.name as roomtype, rt.roomtype as roomtype_code, b.bedno, r.ward as ward_code, r.roomno, nd.price
   FROM bedno b
   LEFT OUTER JOIN roomno r ON r.roomno = b.roomno
   LEFT OUTER JOIN ward w ON w.ward = r.ward
   LEFT OUTER JOIN roomtype rt ON rt.roomtype = r.roomtype
+  LEFT OUTER JOIN nondrugitems nd ON nd.icode = b.room_charge_icode
   WHERE rt.hos_guid = 'Y'
     AND w.ward_active = 'Y'
     AND b.bed_status_type_id = 1
@@ -190,6 +191,7 @@ router.get('/hosbed', authCheck, async (req, res) => {
       ward_code:     row.ward_code,
       roomno:        row.roomno,
       bedno:         row.bedno,
+      price:         row.price,
       room_status: availSet.has(row.bedno) ? 'available' : 'occupied'
     }));
 
@@ -441,3 +443,4 @@ router.post('/seed-demo', authCheck, async (req, res) => {
 });
 
 module.exports = router;
+module.exports.ensureTables = ensureTables;

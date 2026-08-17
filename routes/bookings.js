@@ -97,7 +97,7 @@ router.get('/info-by-an/:an', authCheck, async (req, res) => {
   const cfg = loadSettings();
   const { an } = req.params;
   try {
-    const [wardRows, doctorRows, rightsRows] = await Promise.all([
+    const [wardRows, doctorRows, rightsRows, admitRows] = await Promise.all([
       query(
         `SELECT w.name as ward_name FROM ipt i LEFT OUTER JOIN ward w ON w.ward = i.ward WHERE i.an = $1 AND w.ward_active = 'Y' LIMIT 1`,
         [an], cfg
@@ -114,6 +114,10 @@ router.get('/info-by-an/:an', authCheck, async (req, res) => {
          LEFT JOIN pttype p ON p.pttype = i.pttype
          WHERE i.an = $1 LIMIT 1`,
         [an], cfg
+      ),
+      query(
+        `SELECT i.regdate as admit_date FROM ipt i WHERE i.an = $1 LIMIT 1`,
+        [an], cfg
       )
     ]);
     const r = rightsRows?.[0];
@@ -122,7 +126,8 @@ router.get('/info-by-an/:an', authCheck, async (req, res) => {
       success:     true,
       ward_name:   wardRows?.[0]?.ward_name    || null,
       doctor_name: doctorRows?.[0]?.doctor_name || null,
-      rights_name: rightsDisplay
+      rights_name: rightsDisplay,
+      admit_date:  admitRows?.[0]?.admit_date   || null
     });
   } catch (err) {
     res.json({ success: false, message: err.message });
@@ -246,6 +251,38 @@ router.get('/occupants', authCheck, async (req, res) => {
       ORDER BY w.name, rt.name, b.bedno
     `, [], cfg);
     res.json({ success: true, occupants: rows });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// GET all currently admitted patients grouped by ward (ทุก ward ไม่จำกัดเฉพาะห้องพิเศษ)
+router.get('/ward-patients', authCheck, async (req, res) => {
+  const cfg = loadSettings();
+  try {
+    const rows = await query(`
+      SELECT w.name as ward, i.hn, i.an, i.regdate,
+             concat(p.pname, p.fname, '  ', p.lname) as ptname,
+             b.bedno,
+             dd.name as doctor,
+             EXISTS (
+               SELECT 1 FROM waiting_list wl
+               WHERE wl.status = 'waiting'
+                 AND (wl.an = i.an OR (wl.an IS NULL AND wl.hn = i.hn))
+             ) as waiting_special_room
+      FROM ipt i
+      LEFT OUTER JOIN ward w ON w.ward = i.ward
+      LEFT OUTER JOIN patient p ON p.hn = i.hn
+      LEFT OUTER JOIN iptadm ia ON ia.an = i.an
+      LEFT OUTER JOIN bedno b ON b.bedno = ia.bedno
+      LEFT OUTER JOIN ipt_doctor_list idl ON idl.an = i.an AND idl.active_doctor = 'Y'
+      LEFT OUTER JOIN doctor dd ON dd.code = idl.doctor
+      WHERE i.dchdate IS NULL
+        AND w.ward_active = 'Y'
+      GROUP BY w.name, i.hn, i.an, i.regdate, p.pname, p.fname, p.lname, b.bedno, dd.name
+      ORDER BY w.name, i.regdate
+    `, [], cfg);
+    res.json({ success: true, patients: rows });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }

@@ -13,7 +13,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   await checkAuth();
   initClock();
   await Promise.all([loadRooms(), loadRoomTypes()]);
-  await Promise.all([loadWaitlist(), loadBookings(), loadBookingWards(), loadBookingRoomTypes(), loadBookingPriorityTypes(), loadReservations()]);
+  await Promise.all([loadWaitlist(), loadBookings(), loadBookingWards(), loadBookingRoomTypes(), loadBookingPriorityTypes(), loadRoomPriceTypes(), loadReservations()]);
   clearBookingForm();
   loadAllQueue();
   loadHosBeds();
@@ -66,9 +66,11 @@ socket.on('waitlist_updated', () => refreshAllData());
 
 /* ===== TAB NAVIGATION ===== */
 const tabTitles = {
-  dashboard:    '📊 แดชบอร์ดสถานะห้องพัก',
+  dashboard:     '📊 แดชบอร์ดสถานะห้องพัก',
+  wardpatients:  '🧑‍⚕️ รายชื่อคนไข้ที่นอนใน ward',
   specrooms:    '🏠 ห้องพิเศษทั้งหมด',
   booking:      '📝 ฟอร์มจองห้องพิเศษ',
+  mywardbookings: '🗂️ คนไข้ที่ ward ท่านเป็นคนจอง',
   reservations: '📋 รายชื่อผู้จองห้องพิเศษ (ได้ห้องแล้ว รอเข้าพัก)',
   waitlist:     '⏳ คิวรอห้องพัก (จองคิวไว้ ยังไม่ได้ห้อง)',
   current:      '🛏️ ผู้พักและการจองปัจจุบัน',
@@ -86,6 +88,8 @@ function switchTab(tab) {
   if (tab === 'allrooms')     loadAllQueue();
   if (tab === 'settings')     loadSettingsData();
   if (tab === 'reservations') loadReservations();
+  if (tab === 'wardpatients') loadWardPatients();
+  if (tab === 'mywardbookings') loadMyWardBookings();
 }
 
 /* ===== TOAST ===== */
@@ -621,6 +625,10 @@ async function fillWardByAN(an) {
         const piRights = document.getElementById('piRights');
         if (piRights) piRights.textContent = data.rights_name;
       }
+      if (data.admit_date) {
+        const admitEl = document.getElementById('bnAdmitDate');
+        if (admitEl) admitEl.value = new Date(data.admit_date).toLocaleString('th-TH', { day:'2-digit', month:'2-digit', year:'numeric', hour:'2-digit', minute:'2-digit' });
+      }
     }
   } catch(e) {}
 }
@@ -687,6 +695,36 @@ function setDefaultDateTime() {
   const pad = n => String(n).padStart(2,'0');
   const fmt = (d) => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
   document.getElementById('bnCheckIn').value = fmt(now);
+}
+
+/* ===== วันที่จองห้อง (auto = วันเวลาปัจจุบัน) ===== */
+function setBookingDateNow() {
+  const el = document.getElementById('bnBookingDate');
+  if (!el) return;
+  const now = new Date();
+  const pad = n => String(n).padStart(2,'0');
+  el.value = `${pad(now.getDate())}-${pad(now.getMonth()+1)}-${now.getFullYear()} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
+}
+
+/* ===== ราคาห้องที่จอง (จาก room_types) ===== */
+async function loadRoomPriceTypes() {
+  const sel = document.getElementById('bnRoomPriceType');
+  if (!sel) return;
+  try {
+    const res  = await fetch('/api/rooms/types');
+    const data = await res.json();
+    if (!data.success) return;
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">-- เลือกประเภทห้อง/ราคา --</option>';
+    const sorted = [...(data.types || [])].sort((a, b) => (+a.price_per_day) - (+b.price_per_day));
+    sorted.forEach(t => {
+      const opt = document.createElement('option');
+      opt.value = t.id;
+      opt.textContent = `${t.type_name} ${(+t.price_per_day).toLocaleString('th-TH')} บาท`;
+      sel.appendChild(opt);
+    });
+    if ([...sel.options].some(o => o.value === cur)) sel.value = cur;
+  } catch(e) {}
 }
 
 /* ===== SUBMIT BOOKING ===== */
@@ -766,8 +804,13 @@ async function addToWaitlist() {
   const contactName = document.getElementById('bnContactName').value.trim();
   const contactPhone= document.getElementById('bnContactPhone').value.trim();
   const notes       = document.getElementById('bnNotes').value;
+  const noRoomReason= document.getElementById('bnNoRoomReason')?.value || null;
   const rightsType  = document.getElementById('bnRightsType').value;
   const wardCode    = document.getElementById('bnWardFilter').value;
+  const ward        = document.getElementById('bnWard').value.trim();
+  const priceTypeSel= document.getElementById('bnRoomPriceType');
+  const priceTypeId = priceTypeSel?.value || null;
+  const priceTypeName = priceTypeSel?.value ? (priceTypeSel.options[priceTypeSel.selectedIndex]?.text || null) : null;
 
   if (!hn) return toast('กรุณากรอก HN', 'warning');
   if (!patientName) return toast('กรุณาค้นหาข้อมูลผู้ป่วยก่อน', 'warning');
@@ -778,23 +821,27 @@ async function addToWaitlist() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        hn, patient_name: patientName, room_type_id: roomtype || null,
+        hn, patient_name: patientName, room_type_id: priceTypeId,
         rights_type: rightsType, notes,
-        an,
-        ward: document.getElementById('bnWard').value.trim(),
+        an, ward,
         doctor_name: document.getElementById('bnDoctor').value.trim(),
-        ward_code: wardCode, roomtype_code: roomtype, bedno,
+        ward_code: wardCode, bedno,
         check_in_date: checkIn, check_out_date: checkOut,
         deposit_amount: deposit || 0,
         contact_name: contactName, contact_phone: contactPhone,
         priority_type: (document.getElementById('bnPriorityType') || {}).value || null,
         roomtype_code: roomtype || null,
-        roomtype_name: (() => { const s = document.getElementById('bnRoomType'); return s && s.value ? s.options[s.selectedIndex]?.text || null : null; })()
+        roomtype_name: priceTypeName,
+        no_room_reason: noRoomReason
       })
     });
     const data = await res.json();
     toast(data.message, data.success ? 'success' : 'error');
-    if (data.success) { clearBookingForm(); switchTab('waitlist'); refreshAllData(); }
+    if (data.success) {
+      clearBookingForm();
+      refreshAllData();
+      await goToMyWardBookings(ward);
+    }
   } catch (e) {
     toast('เกิดข้อผิดพลาด', 'error');
   } finally {
@@ -803,12 +850,14 @@ async function addToWaitlist() {
 }
 
 function clearBookingForm() {
-  ['bnHn','bnAn','bnPatientName','bnRightsType','bnWard','bnDoctor','bnContactName','bnContactPhone','bnNotes','bnDeposit','bnRightsDisplay'].forEach(id => {
+  ['bnHn','bnAn','bnPatientName','bnRightsType','bnWard','bnDoctor','bnContactName','bnContactPhone','bnNotes','bnDeposit','bnRightsDisplay','bnAdmitDate','bnNoRoomReason'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.value = '';
   });
   const pt = document.getElementById('bnPriorityType');
   if (pt) pt.value = '';
+  const rpt = document.getElementById('bnRoomPriceType');
+  if (rpt) rpt.value = '';
   const co = document.getElementById('bnCheckOut');
   if (co) co.value = '';
   const wf = document.getElementById('bnWardFilter'); if (wf) wf.value = '';
@@ -818,6 +867,7 @@ function clearBookingForm() {
   document.getElementById('patientInfoBox').classList.remove('show');
   document.getElementById('roomPriceBox').style.display = 'none';
   setDefaultDateTime();
+  setBookingDateNow();
   currentWaitlistId = null;
 }
 
@@ -1458,7 +1508,6 @@ function renderAllQueue(list) {
           ${th('#')}${th('HN')}${th('ชื่อ-สกุล')}${th('Ward ปัจจุบัน')}${th('ห้อง')}
           ${th('ประเภทห้อง')}${th('สิทธิการรักษา')}${th('วันที่เข้าพัก')}${th('หมายเหตุ')}
           ${th('วันที่จอง')}<th style="padding:10px 12px;text-align:center;border-bottom:1px solid #E0E0E0">สถานะ</th>
-          <th style="padding:10px 12px;text-align:center;border-bottom:1px solid #E0E0E0">จัดการ</th>
         </tr>
       </thead>
       <tbody>
@@ -1477,15 +1526,6 @@ function renderAllQueue(list) {
             <td style="padding:10px 12px;font-size:12px;max-width:160px;white-space:normal;color:#546E7A">${escHtml(item.notes||'-')}</td>
             <td style="padding:10px 12px;font-size:12px;color:#546E7A;white-space:nowrap">${item.date ? item.date.replace('T',' ').slice(0,16) : '-'}</td>
             <td style="padding:10px 12px;text-align:center">${statusChip[item.status]||item.status}</td>
-            <td style="padding:10px 12px;text-align:center">
-              ${item.status === 'reserved'
-                ? `<button class="btn btn-sm" style="background:#1565C0;color:#fff;font-size:12px;padding:5px 10px"
-                     onclick="openCheckinConfirm(${item.id},'${escHtml(item.patient_name||'')}','${escHtml(item.room_number||'')}')">
-                     🔄 อัพเดทสถานะ</button>`
-                : `<button class="btn btn-sm btn-secondary" style="font-size:12px;padding:5px 10px"
-                     onclick="goToBookingFromWait(${item.id})">
-                     📝 จัดห้อง</button>`}
-            </td>
           </tr>`;
         }).join('')}
       </tbody>
@@ -1859,6 +1899,9 @@ function populateWardDropdown(beds) {
   if (wards.includes(current)) sel.value = current;
 }
 
+const DASH_WARD_STORAGE_KEY = 'dashWardFilter';
+let dashWardRestored = false;
+
 function populateDashWardDropdown(beds) {
   const sel = document.getElementById('dashBedWardFilter');
   if (!sel) return;
@@ -1870,7 +1913,23 @@ function populateDashWardDropdown(beds) {
     opt.value = w; opt.textContent = w;
     sel.appendChild(opt);
   });
-  if (wards.includes(current)) sel.value = current;
+  if (wards.includes(current)) {
+    sel.value = current;
+  } else if (!dashWardRestored) {
+    const saved = localStorage.getItem(DASH_WARD_STORAGE_KEY) || '';
+    if (saved && wards.includes(saved)) sel.value = saved;
+  }
+  if (!dashWardRestored) {
+    dashWardRestored = true;
+    filterDashHosBeds();
+  }
+}
+
+function rememberDashWard() {
+  const sel = document.getElementById('dashBedWardFilter');
+  const ward = sel?.value || '';
+  localStorage.setItem(DASH_WARD_STORAGE_KEY, ward);
+  toast(ward ? `📌 จำค่า Ward "${ward}" แล้ว` : '📌 จำค่า "ทุก Ward" แล้ว', 'success');
 }
 
 function filterHosBeds() {
@@ -1906,6 +1965,285 @@ function updateStatsByBeds(beds, ward) {
   // คิวรอ: กรองตาม ward ถ้าเลือก
   const waiting = waitlistItems.filter(w => w.status === 'waiting' && (!ward || w.ward === ward)).length;
   setText('countWaiting', waiting);
+}
+
+/* ===== WARD PATIENTS (คนไข้ที่นอนใน ward ทั้งหมด) ===== */
+let allWardPatients = [];
+
+async function loadWardPatients() {
+  const container = document.getElementById('wardPatientsContent');
+  if (container) container.innerHTML = `<div class="empty-state"><div class="spinner" style="margin:0 auto"></div><p style="margin-top:12px">กำลังโหลด...</p></div>`;
+  try {
+    const res = await fetch('/api/bookings/ward-patients');
+    const data = await res.json();
+    if (!data.success) {
+      if (container) container.innerHTML = `<div class="alert alert-error" style="margin:20px">❌ ${data.message}</div>`;
+      return;
+    }
+    allWardPatients = data.patients || [];
+    populateWardPatientsWardDropdown(allWardPatients);
+    filterWardPatients();
+  } catch (e) {
+    if (container) container.innerHTML = `<div class="alert alert-error" style="margin:20px">❌ ไม่สามารถโหลดข้อมูลได้</div>`;
+  }
+}
+
+const WARD_PATIENTS_STORAGE_KEY = 'wardPatientsWardFilter';
+let wardPatientsWardRestored = false;
+
+function populateWardPatientsWardDropdown(patients) {
+  const sel = document.getElementById('wardPatientsWardFilter');
+  if (!sel) return;
+  const current = sel.value;
+  const wards = [...new Set(patients.map(p => p.ward).filter(Boolean))].sort();
+  sel.innerHTML = '<option value="">— ทุก Ward —</option>';
+  wards.forEach(w => {
+    const opt = document.createElement('option');
+    opt.value = w; opt.textContent = w;
+    sel.appendChild(opt);
+  });
+  if (wards.includes(current)) {
+    sel.value = current;
+  } else if (!wardPatientsWardRestored) {
+    const saved = localStorage.getItem(WARD_PATIENTS_STORAGE_KEY) || '';
+    if (saved && wards.includes(saved)) sel.value = saved;
+  }
+  wardPatientsWardRestored = true;
+}
+
+function rememberWardPatientsWard() {
+  const sel = document.getElementById('wardPatientsWardFilter');
+  const ward = sel?.value || '';
+  localStorage.setItem(WARD_PATIENTS_STORAGE_KEY, ward);
+  toast(ward ? `📌 จำค่า Ward "${ward}" แล้ว` : '📌 จำค่า "ทุก Ward" แล้ว', 'success');
+}
+
+function filterWardPatients() {
+  const ward = document.getElementById('wardPatientsWardFilter')?.value || '';
+  const hnQ  = document.getElementById('wardPatientsHnFilter')?.value.trim().toLowerCase() || '';
+  const anQ  = document.getElementById('wardPatientsAnFilter')?.value.trim().toLowerCase() || '';
+  let filtered = allWardPatients;
+  if (ward) filtered = filtered.filter(p => p.ward === ward);
+  if (hnQ)  filtered = filtered.filter(p => (p.hn || '').toLowerCase().includes(hnQ));
+  if (anQ)  filtered = filtered.filter(p => (p.an || '').toLowerCase().includes(anQ));
+  filtered = [...filtered].sort((a, b) => String(a.bedno || '').localeCompare(String(b.bedno || ''), 'th', { numeric: true }));
+  renderWardPatients(filtered);
+}
+
+function renderWardPatients(patients) {
+  const container = document.getElementById('wardPatientsContent');
+  const countBar   = document.getElementById('wardPatientsCountBar');
+  if (!container) return;
+  if (countBar) countBar.textContent = `พบทั้งหมด ${patients.length} ราย`;
+  if (!patients || patients.length === 0) {
+    container.innerHTML = `<div class="empty-state"><div class="empty-icon">🧑‍⚕️</div><p>ไม่พบข้อมูลคนไข้</p></div>`;
+    return;
+  }
+  const th = s => `<th style="padding:10px 12px;text-align:left;border-bottom:1px solid #E0E0E0;white-space:nowrap">${s}</th>`;
+  const fmtDate = v => v ? new Date(v).toLocaleDateString('th-TH', { day:'numeric', month:'short', year:'numeric' }) : '-';
+  container.innerHTML = `
+    <table style="width:100%;border-collapse:collapse;font-size:14px">
+      <thead>
+        <tr style="background:#F5F7FA;color:#546E7A;font-size:12px;font-weight:700">
+          ${th('#')}${th('Ward')}${th('เตียง')}${th('AN')}${th('HN')}${th('ชื่อ-สกุล')}${th('แพทย์เจ้าของไข้')}${th('วัน Admit')}<th style="padding:10px 12px;text-align:center;border-bottom:1px solid #E0E0E0">สถานะ</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${patients.map((p, i) => `
+          <tr style="background:${i % 2 === 0 ? '#fff' : '#FAFAFA'};border-bottom:1px solid #F0F0F0;cursor:pointer"
+              title="คลิกเพื่อไปที่ฟอร์มจองห้องพิเศษ"
+              onclick="openWardPatientBooking('${escAttr(p.hn || '')}','${escAttr(p.an || '')}')">
+            <td style="padding:10px 12px;color:#90A4AE;font-size:12px">${i + 1}</td>
+            <td style="padding:10px 12px">${escHtml(p.ward || '-')}</td>
+            <td style="padding:10px 12px">${escHtml(p.bedno || '-')}</td>
+            <td style="padding:10px 12px">${escHtml(p.an || '-')}</td>
+            <td style="padding:10px 12px;font-weight:600;color:var(--primary)">${escHtml(p.hn || '-')}</td>
+            <td style="padding:10px 12px">${escHtml((p.ptname || '').trim() || '-')}</td>
+            <td style="padding:10px 12px">${escHtml(p.doctor || '-')}</td>
+            <td style="padding:10px 12px;font-size:12px;white-space:nowrap">${fmtDate(p.regdate)}</td>
+            <td style="padding:10px 12px;text-align:center">${p.waiting_special_room ? '<span class="status-chip chip-waiting">⏳ รอห้องพิเศษ</span>' : '-'}</td>
+          </tr>`).join('')}
+      </tbody>
+    </table>`;
+}
+
+async function openWardPatientBooking(hn, an) {
+  switchTab('booking');
+  clearBookingForm();
+  if (hn) {
+    document.getElementById('bnHn').value = hn;
+    await searchPatient();
+  }
+  if (an) {
+    document.getElementById('bnAn').value = an;
+    await fillWardByAN(an);
+  }
+}
+
+/* ===== MY WARD BOOKINGS (waiting_list.ward = ward ที่จอง) ===== */
+let allMyWardBookings = [];
+const MY_WARD_BOOKINGS_STORAGE_KEY = 'myWardBookingsWardFilter';
+let myWardBookingsWardRestored = false;
+
+async function loadMyWardBookings() {
+  const container = document.getElementById('myWardBookingsContent');
+  if (container) container.innerHTML = `<div class="empty-state"><div class="spinner" style="margin:0 auto"></div><p style="margin-top:12px">กำลังโหลด...</p></div>`;
+  try {
+    const res = await fetch('/api/waitlist?all=true');
+    const data = await res.json();
+    if (!data.success) {
+      if (container) container.innerHTML = `<div class="alert alert-error" style="margin:20px">❌ ${data.message}</div>`;
+      return;
+    }
+    allMyWardBookings = (data.list || []).filter(w => w.status !== 'cancelled');
+    populateMyWardBookingsWardDropdown(allMyWardBookings);
+    filterMyWardBookings();
+  } catch (e) {
+    if (container) container.innerHTML = `<div class="alert alert-error" style="margin:20px">❌ ไม่สามารถโหลดข้อมูลได้</div>`;
+  }
+}
+
+function populateMyWardBookingsWardDropdown(list) {
+  const sel = document.getElementById('myWardBookingsWardFilter');
+  if (!sel) return;
+  const current = sel.value;
+  const wards = [...new Set(list.map(w => w.ward).filter(Boolean))].sort();
+  sel.innerHTML = '<option value="">— ทุก Ward —</option>';
+  wards.forEach(w => {
+    const opt = document.createElement('option');
+    opt.value = w; opt.textContent = w;
+    sel.appendChild(opt);
+  });
+  if (wards.includes(current)) {
+    sel.value = current;
+  } else if (!myWardBookingsWardRestored) {
+    const saved = localStorage.getItem(MY_WARD_BOOKINGS_STORAGE_KEY) || '';
+    if (saved && wards.includes(saved)) sel.value = saved;
+  }
+  myWardBookingsWardRestored = true;
+}
+
+/* เด้งมาที่หน้านี้หลังบันทึกคิวรอสำเร็จ พร้อมกรองตาม ward ที่เพิ่งจอง */
+async function goToMyWardBookings(ward) {
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  document.getElementById('panel-mywardbookings').classList.add('active');
+  document.getElementById('nav-mywardbookings').classList.add('active');
+  document.getElementById('topbarTitle').textContent = tabTitles['mywardbookings'];
+
+  await loadMyWardBookings();
+
+  const sel = document.getElementById('myWardBookingsWardFilter');
+  if (sel && ward) {
+    if (![...sel.options].some(o => o.value === ward)) {
+      const opt = document.createElement('option');
+      opt.value = ward; opt.textContent = ward;
+      sel.appendChild(opt);
+    }
+    sel.value = ward;
+  }
+  filterMyWardBookings();
+}
+
+function rememberMyWardBookingsWard() {
+  const sel = document.getElementById('myWardBookingsWardFilter');
+  const ward = sel?.value || '';
+  localStorage.setItem(MY_WARD_BOOKINGS_STORAGE_KEY, ward);
+  toast(ward ? `📌 จำค่า Ward "${ward}" แล้ว` : '📌 จำค่า "ทุก Ward" แล้ว', 'success');
+}
+
+function filterMyWardBookings() {
+  const ward = document.getElementById('myWardBookingsWardFilter')?.value || '';
+  const filtered = ward ? allMyWardBookings.filter(w => w.ward === ward) : allMyWardBookings;
+  renderMyWardBookings(filtered);
+}
+
+function renderMyWardBookings(list) {
+  const container = document.getElementById('myWardBookingsContent');
+  const countBar   = document.getElementById('myWardBookingsCountBar');
+  if (!container) return;
+  if (countBar) countBar.textContent = `พบทั้งหมด ${list.length} ราย`;
+  if (!list || list.length === 0) {
+    container.innerHTML = `<div class="empty-state"><div class="empty-icon">🗂️</div><p>ไม่พบข้อมูล</p></div>`;
+    return;
+  }
+  const statusChip = {
+    waiting:  '<span class="status-chip chip-waiting">⏳ ยังไม่ได้ห้อง</span>',
+    assigned: '<span class="status-chip chip-reserved">✅ ได้ห้องแล้ว</span>'
+  };
+  const th = s => `<th style="padding:10px 12px;text-align:left;border-bottom:1px solid #E0E0E0;white-space:nowrap">${s}</th>`;
+  const fmtDate = v => v ? new Date(v).toLocaleDateString('th-TH', { day:'numeric', month:'short', year:'numeric' }) : '-';
+  container.innerHTML = `
+    <table style="width:100%;border-collapse:collapse;font-size:14px">
+      <thead>
+        <tr style="background:#F5F7FA;color:#546E7A;font-size:12px;font-weight:700">
+          ${th('#')}${th('Ward ที่จอง')}${th('HN')}${th('ชื่อ-สกุล')}${th('AN')}${th('ราคาห้องที่จอง')}
+          ${th('วันที่จะใช้ห้อง')}${th('วันที่จอง')}<th style="padding:10px 12px;text-align:center;border-bottom:1px solid #E0E0E0">สถานะ</th>
+          <th style="padding:10px 12px;text-align:center;border-bottom:1px solid #E0E0E0">จัดการ</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${list.map((w, i) => `
+          <tr style="background:${i % 2 === 0 ? '#fff' : '#FAFAFA'};border-bottom:1px solid #F0F0F0">
+            <td style="padding:10px 12px;color:#90A4AE;font-size:12px">${i + 1}</td>
+            <td style="padding:10px 12px">${escHtml(w.ward || '-')}</td>
+            <td style="padding:10px 12px;font-weight:600;color:var(--primary)">${escHtml(w.hn || '-')}</td>
+            <td style="padding:10px 12px">${escHtml(w.patient_name || '-')}</td>
+            <td style="padding:10px 12px">${escHtml(w.an || '-')}</td>
+            <td style="padding:10px 12px">${escHtml(w.roomtype_name || w.type_name || '-')}</td>
+            <td style="padding:10px 12px;font-size:12px;white-space:nowrap">${fmtDate(w.check_in_date)}</td>
+            <td style="padding:10px 12px;font-size:12px;white-space:nowrap">${fmtDate(w.request_date)}</td>
+            <td style="padding:10px 12px;text-align:center">${statusChip[w.status] || w.status || '-'}</td>
+            <td style="padding:10px 12px;text-align:center">
+              <button class="btn btn-secondary btn-sm" style="font-size:12px;padding:5px 10px"
+                onclick="openEditPriceModal(${w.id},'${escAttr(w.patient_name || '')}',${w.room_type_id || 'null'})">
+                ✏️ เปลี่ยนราคาห้องที่เลือก</button>
+            </td>
+          </tr>`).join('')}
+      </tbody>
+    </table>`;
+}
+
+/* ===== EDIT PRICE MODAL ===== */
+async function openEditPriceModal(id, patientName, roomTypeId) {
+  document.getElementById('epId').value = id;
+  document.getElementById('epPatientLabel').textContent = patientName ? `ผู้ป่วย: ${patientName}` : '';
+  const sel = document.getElementById('epRoomPriceType');
+  try {
+    const res  = await fetch('/api/rooms/types');
+    const data = await res.json();
+    sel.innerHTML = '<option value="">-- เลือกประเภทห้อง/ราคา --</option>';
+    if (data.success) {
+      const sorted = [...(data.types || [])].sort((a, b) => (+a.price_per_day) - (+b.price_per_day));
+      sorted.forEach(t => {
+        const opt = document.createElement('option');
+        opt.value = t.id;
+        opt.textContent = `${t.type_name} ${(+t.price_per_day).toLocaleString('th-TH')} บาท`;
+        sel.appendChild(opt);
+      });
+    }
+  } catch(e) {}
+  sel.value = roomTypeId || '';
+  document.getElementById('editPriceModal').classList.add('show');
+}
+
+async function saveEditPrice() {
+  const id = document.getElementById('epId').value;
+  const roomTypeId = document.getElementById('epRoomPriceType').value || null;
+  try {
+    const res = await fetch(`/api/waitlist/${id}/price`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ room_type_id: roomTypeId })
+    });
+    const data = await res.json();
+    if (!data.success) throw new Error(data.message);
+    toast('แก้ไขราคาห้องที่จองเรียบร้อย', 'success');
+    closeModal('editPriceModal');
+    loadMyWardBookings();
+  } catch (e) {
+    toast('เกิดข้อผิดพลาด: ' + e.message, 'error');
+  }
 }
 
 function renderHosBeds(beds) {
@@ -1965,8 +2303,14 @@ function renderBedsToContainer(beds, containerId) {
           ? bed.patient_name.split(' ').slice(0,2).join(' ')
           : '';
 
+        const price = Number(bed.price);
+        const priceHtml = price > 0
+          ? `<span class="bed-price">${price.toLocaleString('th-TH')} บาท</span>`
+          : '';
+
         html += `<div class="bed-box bed-${st}" onclick='openBedDetail(${JSON.stringify(bed).replace(/'/g,"&#39;")})' title="${bed.bedno} - ${label}${hasPatient ? '\n' + bed.patient_name : ''}">
           <div class="bed-status-dot"></div>
+          ${priceHtml}
           <span class="bed-number">${bed.bedno}</span>
           ${hasPatient ? `<span class="bed-patient">${shortName}</span>` : ''}
         </div>`;
@@ -2091,6 +2435,25 @@ let hisRoomtypesLoaded = false;
 
 async function loadSettingsData() {
   // reserved for future settings sections
+}
+
+/* ===== ROOM TYPE PRICE SETTINGS (collapsible, with add) ===== */
+let roomTypesSettingsLoaded = false;
+
+function toggleRoomTypesSettings() {
+  const container  = document.getElementById('roomTypesSettingsContainer');
+  const chevron    = document.getElementById('roomTypesSettingsChevron');
+  const refreshBtn = document.getElementById('rtRefreshBtn');
+  const addBtn     = document.getElementById('rtAddBtn');
+  const isHidden   = container.style.display === 'none';
+  container.style.display = isHidden ? 'block' : 'none';
+  chevron.style.transform  = isHidden ? 'rotate(90deg)' : '';
+  if (refreshBtn) refreshBtn.style.display = isHidden ? '' : 'none';
+  if (addBtn) addBtn.style.display = isHidden ? '' : 'none';
+  if (isHidden && !roomTypesSettingsLoaded) {
+    roomTypesSettingsLoaded = true;
+    loadRoomTypesSettings();
+  }
 }
 
 /* ===== HIS PRIORITY TYPES (collapsible, with add) ===== */
@@ -2461,6 +2824,7 @@ async function saveRoomType() {
     closeModal('roomTypeModal');
     await loadRoomTypesSettings();
     loadRoomTypes();
+    loadRoomPriceTypes();
   } catch (e) {
     toast('เกิดข้อผิดพลาด: ' + e.message, 'error');
   }
@@ -2475,6 +2839,7 @@ async function deleteRoomType(id, name) {
     toast('ลบประเภทห้องสำเร็จ', 'success');
     await loadRoomTypesSettings();
     loadRoomTypes();
+    loadRoomPriceTypes();
   } catch (e) {
     toast('เกิดข้อผิดพลาด: ' + e.message, 'error');
   }

@@ -63,7 +63,7 @@ async function runMigrations() {
   } catch {}
 }
 
-const PORT = process.env.PORT || 3003;
+const PORT = process.env.PORT || 3004;
 server.listen(PORT, () => {
   console.log(`Hospital Room System running at http://localhost:${PORT}`);
   runMigrations();

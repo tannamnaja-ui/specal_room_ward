@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const crypto = require('crypto');
 const { loadSettings, saveSettings, testConnection, query } = require('../config/db');
+const { ensureTables } = require('./rooms');
 
 function md5(str) {
   return crypto.createHash('md5').update(str).digest('hex');
@@ -29,6 +30,8 @@ router.post('/save-connection', async (req, res) => {
       }
     }
     saveSettings(newSettings);
+    // ตรวจสอบ/สร้างตาราง (เช่น room_types สำหรับราคาห้องพิเศษ) ทันทีที่บันทึกการเชื่อมต่อ
+    try { await ensureTables(newSettings); } catch (_) {}
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
