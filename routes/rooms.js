@@ -7,7 +7,25 @@ function authCheck(req, res, next) {
   next();
 }
 
+// ensureTables ทำ CREATE/ALTER TABLE ~25 คำสั่งต่อครั้ง — cache ผลไว้ต่อการเชื่อมต่อ
+// เพื่อไม่ต้องยิง DDL ซ้ำทุก request (ของเดิมเรียกทุกครั้งที่เปิดหน้าตั้งค่า/โหลดห้อง ทำให้ช้า/ค้าง
+// ได้ง่ายถ้ามี lock หรือ network latency สูง)
+let _ensuredKey = null;
+let _ensuredPromise = null;
+
 async function ensureTables(cfg) {
+  const key = `${cfg.db_type}:${cfg.host}:${cfg.port}:${cfg.database}:${cfg.username}`;
+  if (_ensuredKey === key && _ensuredPromise) return _ensuredPromise;
+  _ensuredKey = key;
+  _ensuredPromise = ensureTablesInternal(cfg).catch(err => {
+    _ensuredKey = null; // ล้าง cache ถ้าล้มเหลว จะได้ลองใหม่ในครั้งถัดไป
+    _ensuredPromise = null;
+    throw err;
+  });
+  return _ensuredPromise;
+}
+
+async function ensureTablesInternal(cfg) {
   const isPg = cfg.db_type === 'postgresql';
   const autoInc = isPg ? 'SERIAL PRIMARY KEY' : 'INT AUTO_INCREMENT PRIMARY KEY';
 
@@ -79,7 +97,7 @@ async function ensureTables(cfg) {
     bookings: ['booking_ref VARCHAR(20)', 'an VARCHAR(20)', 'ward VARCHAR(100)', 'doctor_name VARCHAR(200)', 'deposit_amount DECIMAL(10,2) DEFAULT 0', 'contact_name VARCHAR(200)', 'contact_phone VARCHAR(50)', 'priority_type VARCHAR(200)'],
     room_types: ['food_price_per_day DECIMAL(10,2) DEFAULT 0'],
     rooms: ['ward VARCHAR(100)'],
-    waiting_list: ['an VARCHAR(20)', 'ward VARCHAR(100)', 'doctor_name VARCHAR(200)', 'contact_name VARCHAR(200)', 'contact_phone VARCHAR(50)', 'priority_type VARCHAR(200)', 'roomtype_code VARCHAR(50)', 'roomtype_name VARCHAR(200)', 'check_in_date VARCHAR(50)', 'no_room_reason TEXT']
+    waiting_list: ['an VARCHAR(20)', 'ward VARCHAR(100)', 'doctor_name VARCHAR(200)', 'contact_name VARCHAR(200)', 'contact_phone VARCHAR(50)', 'priority_type VARCHAR(200)', 'roomtype_code VARCHAR(50)', 'roomtype_name VARCHAR(200)', 'check_in_date VARCHAR(50)', 'no_room_reason TEXT', 'room_type_id_2 INT', 'roomtype_name_2 VARCHAR(200)', 'room_type_id_3 INT', 'roomtype_name_3 VARCHAR(200)', 'no_pay_reason TEXT']
   };
   for (const [tbl, cols] of Object.entries(alterCols)) {
     for (const col of cols) {
@@ -197,6 +215,7 @@ router.get('/hosbed', authCheck, async (req, res) => {
 
     res.json({ success: true, beds });
   } catch (err) {
+    console.error('GET /api/rooms/hosbed error:', err);
     res.status(500).json({ success: false, message: err.message });
   }
 });

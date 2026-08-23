@@ -8,7 +8,7 @@ using System.Windows.Forms;
 
 class TrayApp : ApplicationContext
 {
-    const int PORT = 3003;
+    const int PORT = 3004;
     readonly string baseDir;
     readonly string serverExe;
     readonly string logDir;
@@ -36,7 +36,7 @@ class TrayApp : ApplicationContext
         trayIcon = new NotifyIcon();
         try { trayIcon.Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); }
         catch { trayIcon.Icon = System.Drawing.SystemIcons.Application; }
-        trayIcon.Text = "Special Room System";
+        trayIcon.Text = "Special Room - For Nurse IPD";
         trayIcon.Visible = true;
 
         var menu = new ContextMenuStrip();
@@ -68,7 +68,7 @@ class TrayApp : ApplicationContext
 
         if (!File.Exists(serverExe))
         {
-            MessageBox.Show("ไม่พบไฟล์โปรแกรมหลัก:\n" + serverExe, "Special Room System",
+            MessageBox.Show("ไม่พบไฟล์โปรแกรมหลัก:\n" + serverExe, "Special Room - For Nurse IPD",
                 MessageBoxButtons.OK, MessageBoxIcon.Error);
             Application.Exit();
             return;
@@ -101,7 +101,7 @@ class TrayApp : ApplicationContext
         }
         catch (Exception ex)
         {
-            MessageBox.Show("เริ่มโปรแกรมหลักไม่สำเร็จ:\n" + ex.Message, "Special Room System",
+            MessageBox.Show("เริ่มโปรแกรมหลักไม่สำเร็จ:\n" + ex.Message, "Special Room - For Nurse IPD",
                 MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
@@ -147,7 +147,7 @@ class Launcher
         if (!created)
         {
             // มีอินสแตนซ์เปิดอยู่แล้ว แค่เปิดเบราว์เซอร์ซ้ำแล้วปิดตัวเองไป
-            try { Process.Start("http://localhost:3003/"); } catch { }
+            try { Process.Start("http://localhost:3004/"); } catch { }
             return;
         }
 

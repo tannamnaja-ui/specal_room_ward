@@ -102,7 +102,7 @@ async function query(sql, params = [], cfg = null) {
   } else {
     const pool = getSharedMysqlPool(cfg);
     const mysqlSql = sql.replace(/\$\d+/g, '?');
-    const [rows] = await pool.query(mysqlSql, params);
+    const [rows] = await pool.query({ sql: mysqlSql, timeout: 15000 }, params);
     return rows;
   }
 }

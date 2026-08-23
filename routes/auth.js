@@ -81,6 +81,25 @@ router.post('/login', async (req, res) => {
   }
 });
 
+// Login via BMS Session (ตาม BMS-SESSION-SPECIFICATION.md) — ไม่ต้องกรอก username/password
+// หน้า login.html เป็นคนเรียก HOSxP PasteJSON API เอง (ฝั่ง browser) แล้วส่งข้อมูลผู้ใช้ที่ตรวจสอบแล้วมาที่นี่
+// เพื่อสร้าง session — ไม่เรียก hosxp.net จากฝั่งเซิร์ฟเวอร์เอง เพราะเครื่อง client บางเครื่อง
+// เบราว์เซอร์ออกอินเทอร์เน็ต/proxy ได้ปกติ (ใช้ BMS อยู่แล้ว) แต่ตัวเซิร์ฟเวอร์ Node ที่รันอยู่เครื่องเดียวกัน
+// อาจไม่มีเส้นทางออกอินเทอร์เน็ตแบบเดียวกัน (ไม่ผ่าน proxy เดียวกับเบราว์เซอร์) ทำให้เรียก hosxp.net ไม่ได้
+router.post('/bms-login', (req, res) => {
+  const { name, loginName, sessionId } = req.body;
+  if (!name && !loginName) {
+    return res.status(400).json({ success: false, message: 'ไม่พบข้อมูลผู้ใช้จาก BMS Session' });
+  }
+
+  req.session.user = {
+    login_name: loginName || `bms-${String(sessionId || '').slice(0, 12)}`,
+    name: name || 'ผู้ใช้ BMS',
+    bms_session: true
+  };
+  res.json({ success: true, user: req.session.user });
+});
+
 // Logout
 router.post('/logout', (req, res) => {
   req.session.destroy(() => res.json({ success: true }));

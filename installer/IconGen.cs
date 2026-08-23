@@ -19,31 +19,52 @@ class IconGen
             float pad = size * 0.04f;
             var rect = new RectangleF(pad, pad, size - pad * 2, size - pad * 2);
 
-            // พาสเทลชมพู วงกลม พร้อมไล่เฉดอ่อนๆ ให้ดูมีมิติ
+            // พาสเทลเขียว วงกลม พร้อมไล่เฉดอ่อนๆ ให้ดูมีมิติ
             using (var path = new GraphicsPath())
             {
                 path.AddEllipse(rect);
                 using (var brush = new PathGradientBrush(path))
                 {
-                    brush.CenterColor = ColorTranslator.FromHtml("#FFD6E8");
-                    brush.SurroundColors = new[] { ColorTranslator.FromHtml("#F5A9C9") };
+                    brush.CenterColor = ColorTranslator.FromHtml("#DFF3E1");
+                    brush.SurroundColors = new[] { ColorTranslator.FromHtml("#8FD3A0") };
                     g.FillPath(brush, path);
                 }
             }
 
-            // ขอบวงกลมสีชมพูเข้มขึ้นเล็กน้อย
-            using (var pen = new Pen(ColorTranslator.FromHtml("#E884B3"), Math.Max(1f, size * 0.02f)))
+            // ขอบวงกลมสีเขียวเข้มขึ้นเล็กน้อย
+            using (var pen = new Pen(ColorTranslator.FromHtml("#4CAF50"), Math.Max(1f, size * 0.02f)))
             {
                 g.DrawEllipse(pen, rect);
             }
 
-            // ตัวอักษร R สีขาว กึ่งกลางวงกลม
-            using (var font = new Font("Segoe UI", size * 0.52f, FontStyle.Bold, GraphicsUnit.Pixel))
+            // ตัวอักษร NRoom สีขาว กึ่งกลางวงกลม (ลดขนาดฟอนต์ไล่ลงจนพอดีความกว้างวงกลม)
             using (var textBrush = new SolidBrush(Color.White))
             using (var fmt = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
             {
-                var textRect = new RectangleF(0, size * -0.03f, size, size);
-                g.DrawString("R", font, textBrush, textRect, fmt);
+                const string text = "NRoom";
+                float targetWidth = size * 0.78f;
+                float fontSize = size * 0.30f;
+                Font font = null;
+                try
+                {
+                    while (fontSize > size * 0.08f)
+                    {
+                        font = new Font("Segoe UI", fontSize, FontStyle.Bold, GraphicsUnit.Pixel);
+                        var measured = g.MeasureString(text, font);
+                        if (measured.Width <= targetWidth) break;
+                        font.Dispose();
+                        font = null;
+                        fontSize -= size * 0.01f;
+                    }
+                    if (font == null) font = new Font("Segoe UI", fontSize, FontStyle.Bold, GraphicsUnit.Pixel);
+
+                    var textRect = new RectangleF(0, size * -0.02f, size, size);
+                    g.DrawString(text, font, textBrush, textRect, fmt);
+                }
+                finally
+                {
+                    if (font != null) font.Dispose();
+                }
             }
         }
         return bmp;

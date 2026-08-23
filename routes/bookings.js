@@ -252,6 +252,7 @@ router.get('/occupants', authCheck, async (req, res) => {
     `, [], cfg);
     res.json({ success: true, occupants: rows });
   } catch (err) {
+    console.error('GET /api/bookings/occupants error:', err);
     res.status(500).json({ success: false, message: err.message });
   }
 });
@@ -642,12 +643,16 @@ router.get('/allqueue', authCheck, async (req, res) => {
                w.ward AS booked_ward, w.rights_type, w.request_date,
                w.check_in_date, w.notes, w.priority_type,
                COALESCE(w.roomtype_name, rt.type_name) AS type_name,
+               COALESCE(w.roomtype_name_2, rt2.type_name) AS type_name_2,
+               COALESCE(w.roomtype_name_3, rt3.type_name) AS type_name_3,
                wd.name AS ipt_ward_name,
                (SELECT ${rrDateExpr} FROM roomtype_reserve rr
                 WHERE rr.hn = w.hn AND (w.an IS NULL OR w.an = '' OR rr.an = w.an)
                 ORDER BY rr.roomtype_reserve_id DESC LIMIT 1) AS rr_est_adm_date
         FROM waiting_list w
         LEFT JOIN room_types rt ON rt.id = w.room_type_id
+        LEFT JOIN room_types rt2 ON rt2.id = w.room_type_id_2
+        LEFT JOIN room_types rt3 ON rt3.id = w.room_type_id_3
         LEFT JOIN ipt i ON i.an = w.an AND i.dchdate IS NULL
         LEFT JOIN ward wd ON wd.ward = i.ward
         WHERE w.status = 'waiting'

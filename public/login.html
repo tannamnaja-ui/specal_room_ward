@@ -112,6 +112,98 @@
       }
     }
 
+    /* ---- BMS Session auto-login (ดูรายละเอียดที่ BMS-SESSION-SPECIFICATION.md) ---- */
+    const BMS_COOKIE_NAME = 'bms-session-id';
+
+    function getCookie(name) {
+      const match = document.cookie.match(new RegExp('(?:^|; )' + name + '=([^;]*)'));
+      return match ? decodeURIComponent(match[1]) : null;
+    }
+
+    function setBmsCookie(sessionId) {
+      const expires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toUTCString();
+      const secure = location.protocol === 'https:' ? '; Secure' : '';
+      document.cookie = `${BMS_COOKIE_NAME}=${encodeURIComponent(sessionId)}; expires=${expires}; path=/; SameSite=Lax${secure}`;
+    }
+
+    function removeBmsCookie() {
+      document.cookie = `${BMS_COOKIE_NAME}=; expires=Thu, 01 Jan 1970 00:00:00 GMT; path=/`;
+    }
+
+    // silent=true คือกรณีลองอัตโนมัติจาก cookie เก่า — ถ้า session หมดอายุแล้วให้เงียบไว้ ไม่ต้องโชว์ error รบกวนผู้ใช้
+    //
+    // หมายเหตุ: เรียก HOSxP PasteJSON API ตรง ๆ จากฝั่ง browser ที่นี่เลย (ไม่ผ่าน backend ของเรา)
+    // เพราะเครื่อง client บางเครื่องเบราว์เซอร์ออกอินเทอร์เน็ต/proxy ได้ปกติ (ใช้ BMS อยู่แล้ว)
+    // แต่ตัวเซิร์ฟเวอร์ Node ที่รันอยู่เครื่องเดียวกันอาจไม่มีเส้นทางออกอินเทอร์เน็ตแบบเดียวกัน
+    // ตรงกับที่สเปคต้นฉบับ (BMS-SESSION-SPECIFICATION.md) ออกแบบไว้ว่าให้เรียกจาก client-side
+    async function tryBmsAutoLogin(sessionId, silent) {
+      const btn = document.getElementById('loginBtn');
+      const btnText = document.getElementById('loginBtnText');
+      if (!silent) {
+        if (btn) btn.disabled = true;
+        if (btnText) btnText.textContent = '⏳ กำลังเข้าสู่ระบบด้วย BMS Session...';
+      }
+      try {
+        const bmsRes = await fetch(`https://hosxp.net/phapi/PasteJSON?Action=GET&code=${encodeURIComponent(sessionId)}`);
+        const bmsData = await bmsRes.json();
+
+        if (bmsData.MessageCode === 500) {
+          removeBmsCookie();
+          if (!silent) showAlert('BMS Session หมดอายุแล้ว กรุณาเข้าสู่ระบบใหม่ทาง BMS หรือใช้ Username/Password แทน', 'warning');
+          if (btn) btn.disabled = false;
+          if (btnText) btnText.textContent = '🔑 เข้าสู่ระบบ';
+          return false;
+        }
+        if (bmsData.MessageCode !== 200) {
+          removeBmsCookie();
+          if (!silent) showAlert(bmsData.Message || 'BMS Session ไม่ถูกต้อง กรุณาเข้าสู่ระบบด้วย Username/Password แทน', 'warning');
+          if (btn) btn.disabled = false;
+          if (btnText) btnText.textContent = '🔑 เข้าสู่ระบบ';
+          return false;
+        }
+
+        const userInfo = (bmsData.result && bmsData.result.user_info) || {};
+        const name = userInfo.name || 'ผู้ใช้ BMS';
+        const loginName = userInfo.doctor_code || userInfo.bms_session_code || null;
+
+        const res = await fetch('/api/auth/bms-login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ name, loginName, sessionId })
+        });
+        const data = await res.json();
+        if (data.success) {
+          setBmsCookie(sessionId);
+          showAlert(`ยินดีต้อนรับ ${data.user.name} (เข้าสู่ระบบผ่าน BMS Session)`, 'success');
+          setTimeout(() => location.href = '/index.html', 400);
+          return true;
+        }
+        removeBmsCookie();
+        if (!silent) showAlert(data.message || 'BMS Session ไม่ถูกต้องหรือหมดอายุ กรุณาเข้าสู่ระบบด้วย Username/Password แทน', 'warning');
+      } catch (e) {
+        removeBmsCookie();
+        if (!silent) showAlert('เชื่อมต่อ BMS Session ไม่สำเร็จ (' + (e && e.message ? e.message : 'unknown') + ') กรุณาเข้าสู่ระบบด้วย Username/Password แทน', 'warning');
+      }
+      if (btn) btn.disabled = false;
+      if (btnText) btnText.textContent = '🔑 เข้าสู่ระบบ';
+      return false;
+    }
+
+    (function initBmsSession() {
+      const params = new URLSearchParams(location.search);
+      const urlSessionId = params.get('bms-session-id');
+      if (urlSessionId) {
+        // ล้างพารามิเตอร์ออกจาก URL ให้ดูสะอาด (ตาม spec)
+        params.delete('bms-session-id');
+        const qs = params.toString();
+        history.replaceState({}, '', location.pathname + (qs ? '?' + qs : ''));
+        tryBmsAutoLogin(urlSessionId, false);
+        return;
+      }
+      const cookieSessionId = getCookie(BMS_COOKIE_NAME);
+      if (cookieSessionId) tryBmsAutoLogin(cookieSessionId, true);
+    })();
+
     function showAlert(msg, type = 'error') {
       const box = document.getElementById('alertBox');
       const icons = { error: '❌', success: '✅', warning: '⚠️', info: 'ℹ️' };

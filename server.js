@@ -33,7 +33,12 @@ app.use((req, res, next) => { req.io = io; next(); });
 // เพราะ static จะเสิร์ฟ index.html ให้ตรงๆทันทีถ้าเจอไฟล์ ไม่ผ่านการเช็ค session เลย
 app.get(['/', '/index.html'], (req, res) => {
   if (!loadSettings()) return res.redirect('/settings.html');
-  if (!req.session.user) return res.redirect('/login.html');
+  if (!req.session.user) {
+    // เก็บ query string เดิมไว้ด้วย (เช่น ?bms-session-id=...) ไม่งั้นจะหายไปตอน redirect
+    // ทำให้หน้า login ไม่เห็น session id ที่ BMS ส่งมาให้เลย
+    const qs = req.url.includes('?') ? req.url.slice(req.url.indexOf('?')) : '';
+    return res.redirect('/login.html' + qs);
+  }
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 

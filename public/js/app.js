@@ -6,7 +6,32 @@ let currentUser = null;
 let assignWaitId = null;
 let waitlistItems = [];
 let currentWaitlistId = null;
-const socket = io();
+// ถ้า socket.io.js โหลดไม่สำเร็จ (เช่น ถูก antivirus/proxy บล็อก) ต้องไม่ทำให้ทั้งแอปใช้งานไม่ได้
+// — real-time auto-refresh จะหายไปเฉย ๆ แต่ข้อมูลอื่นต้องโหลด/ใช้งานได้ปกติ (กดรีเฟรชเองแทนได้)
+let socket = null;
+try {
+  if (typeof io === 'function') {
+    socket = io();
+  } else {
+    console.error('Socket.IO client ไม่ได้โหลด (real-time update จะปิดใช้งาน แต่ระบบอื่นทำงานได้ปกติ)');
+  }
+} catch (e) {
+  console.error('เชื่อมต่อ Socket.IO ไม่สำเร็จ:', e);
+}
+
+/* ป้องกันหน้าค้าง "กำลังโหลด..." ตลอดไป กรณี DB ไม่ตอบสนอง (เช่น เชื่อมต่อไม่ถึงเครื่อง DB) */
+async function fetchWithTimeout(url, opts = {}, timeoutMs = 20000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...opts, signal: controller.signal });
+  } catch (e) {
+    if (e.name === 'AbortError') throw new Error('หมดเวลาเชื่อมต่อ (เกิน 20 วินาที) — ตรวจสอบว่าเครื่องนี้เชื่อมต่อฐานข้อมูลได้หรือไม่ ที่หน้า ตั้งค่าการเชื่อมต่อ');
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 /* ===== INIT ===== */
 document.addEventListener('DOMContentLoaded', async () => {
@@ -23,15 +48,22 @@ document.addEventListener('DOMContentLoaded', async () => {
 });
 
 async function checkAuth() {
-  const res = await fetch('/api/auth/me');
-  const data = await res.json();
-  if (!data.loggedIn) { location.href = '/login.html'; return; }
-  currentUser = data.user;
-  document.getElementById('sidebarUserName').textContent = data.user.name || data.user.login_name;
+  try {
+    const res = await fetchWithTimeout('/api/auth/me');
+    const data = await res.json();
+    if (!data.loggedIn) { location.href = '/login.html'; return; }
+    currentUser = data.user;
+    const nameEl = document.getElementById('sidebarUserName');
+    if (nameEl) nameEl.textContent = (data.user && (data.user.name || data.user.login_name)) || '-';
+  } catch (e) {
+    // ไม่ว่า /api/auth/me จะพลาดด้วยเหตุผลอะไร ก็ต้องไม่ทำให้การโหลดข้อมูลส่วนอื่นของทั้งแอปหยุดตาม
+    // เพราะ checkAuth() เป็น await ตัวแรกสุดใน DOMContentLoaded — ถ้าปล่อยให้ throw ทุกอย่างหลังจากนี้จะไม่ทำงานเลย
+    console.error('checkAuth failed (ไม่บล็อกการโหลดหน้าอื่น):', e);
+  }
 }
 
 async function logout() {
-  await fetch('/api/auth/logout', { method: 'POST' });
+  await fetchWithTimeout('/api/auth/logout', { method: 'POST' });
   location.href = '/login.html';
 }
 
@@ -61,8 +93,10 @@ async function refreshAllData() {
 }
 
 /* ===== SOCKET.IO REAL-TIME ===== */
-socket.on('room_updated', () => refreshAllData());
-socket.on('waitlist_updated', () => refreshAllData());
+if (socket) {
+  socket.on('room_updated', () => refreshAllData());
+  socket.on('waitlist_updated', () => refreshAllData());
+}
 
 /* ===== TAB NAVIGATION ===== */
 const tabTitles = {
@@ -133,7 +167,7 @@ async function loadRooms() {
 
 async function loadRoomTypes() {
   try {
-    const res = await fetch('/api/rooms/types');
+    const res = await fetchWithTimeout('/api/rooms/types');
     const data = await res.json();
     if (!data.success) return;
     allRoomTypes = data.types || [];
@@ -281,7 +315,7 @@ function openRoomModal(roomId) {
     btnReady.className = 'btn btn-success btn-sm';
     btnReady.textContent = '✨ ทำความสะอาดเสร็จแล้ว';
     btnReady.onclick = async () => {
-      await fetch(`/api/rooms/${room.id}/status`, { method:'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify({status:'available'}) });
+      await fetchWithTimeout(`/api/rooms/${room.id}/status`, { method:'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify({status:'available'}) });
       closeModal('roomModal'); toast('ห้องพร้อมให้บริการ', 'success'); refreshAllData();
     };
     footer.appendChild(btnReady);
@@ -297,32 +331,32 @@ function openRoomModal(roomId) {
 }
 
 async function markPendingDischarge(room) {
-  const booking = await fetch('/api/bookings').then(r=>r.json()).then(d=>d.bookings?.find(b=>b.room_id==room.id&&b.status==='occupied'));
+  const booking = await fetchWithTimeout('/api/bookings').then(r=>r.json()).then(d=>d.bookings?.find(b=>b.room_id==room.id&&b.status==='occupied'));
   if (!booking) { toast('ไม่พบข้อมูลการจอง', 'error'); return; }
-  await fetch(`/api/bookings/${booking.id}/pending-discharge`, { method:'PATCH' });
+  await fetchWithTimeout(`/api/bookings/${booking.id}/pending-discharge`, { method:'PATCH' });
   closeModal('roomModal'); toast('อัปเดตสถานะ: รอจำหน่าย', 'success'); refreshAllData();
 }
 
 async function checkInByRoom(room) {
-  const booking = await fetch('/api/bookings').then(r=>r.json()).then(d=>d.bookings?.find(b=>b.room_id==room.id&&b.status==='reserved'));
+  const booking = await fetchWithTimeout('/api/bookings').then(r=>r.json()).then(d=>d.bookings?.find(b=>b.room_id==room.id&&b.status==='reserved'));
   if (!booking) { toast('ไม่พบข้อมูลการจอง', 'error'); return; }
-  await fetch(`/api/bookings/${booking.id}/checkin`, { method:'PATCH' });
+  await fetchWithTimeout(`/api/bookings/${booking.id}/checkin`, { method:'PATCH' });
   closeModal('roomModal'); toast('Check-in เรียบร้อย', 'success'); refreshAllData();
 }
 
 async function checkOutByRoom(room) {
   if (!confirm(`ยืนยัน Check-out ห้อง ${room.room_number}?`)) return;
-  const booking = await fetch('/api/bookings').then(r=>r.json()).then(d=>d.bookings?.find(b=>b.room_id==room.id&&b.status==='occupied'));
+  const booking = await fetchWithTimeout('/api/bookings').then(r=>r.json()).then(d=>d.bookings?.find(b=>b.room_id==room.id&&b.status==='occupied'));
   if (!booking) { toast('ไม่พบข้อมูลการจอง', 'error'); return; }
-  await fetch(`/api/bookings/${booking.id}/checkout`, { method:'PATCH' });
+  await fetchWithTimeout(`/api/bookings/${booking.id}/checkout`, { method:'PATCH' });
   closeModal('roomModal'); toast('Check-out เรียบร้อย ห้องอยู่ระหว่างทำความสะอาด', 'success'); refreshAllData();
 }
 
 async function cancelByRoom(room) {
   if (!confirm(`ยืนยันยกเลิกการจองห้อง ${room.room_number}?`)) return;
-  const booking = await fetch('/api/bookings').then(r=>r.json()).then(d=>d.bookings?.find(b=>b.room_id==room.id&&b.status==='reserved'));
+  const booking = await fetchWithTimeout('/api/bookings').then(r=>r.json()).then(d=>d.bookings?.find(b=>b.room_id==room.id&&b.status==='reserved'));
   if (!booking) { toast('ไม่พบข้อมูลการจอง', 'error'); return; }
-  await fetch(`/api/bookings/${booking.id}/cancel`, { method:'PATCH' });
+  await fetchWithTimeout(`/api/bookings/${booking.id}/cancel`, { method:'PATCH' });
   closeModal('roomModal'); toast('ยกเลิกการจองเรียบร้อย', 'success'); refreshAllData();
 }
 
@@ -356,7 +390,7 @@ async function loadBookingWards() {
   const sel = document.getElementById('bnWardFilter');
   if (!sel) return;
   try {
-    const res  = await fetch('/api/bookings/his-wards');
+    const res  = await fetchWithTimeout('/api/bookings/his-wards');
     const data = await res.json();
     if (!data.success) return;
     const cur = sel.value;
@@ -376,7 +410,7 @@ async function loadBookingRoomTypes(ward) {
   try {
     const params = new URLSearchParams();
     if (ward) params.set('ward', ward);
-    const res  = await fetch(`/api/bookings/his-roomtypes?${params}`);
+    const res  = await fetchWithTimeout(`/api/bookings/his-roomtypes?${params}`);
     const data = await res.json();
     if (!data.success) return;
     const cur = sel.value;
@@ -394,7 +428,7 @@ async function loadBookingPriorityTypes() {
   const sel = document.getElementById('bnPriorityType');
   if (!sel) return;
   try {
-    const res  = await fetch('/api/bookings/priority-types');
+    const res  = await fetchWithTimeout('/api/bookings/priority-types');
     const data = await res.json();
     if (!data.success) return;
     sel.innerHTML = '<option value="">-- เลือกประเภทผู้จอง --</option>';
@@ -429,7 +463,7 @@ async function refreshRoomList() {
   if (!wardCode || !roomtype) return;
   try {
     const params = new URLSearchParams({ ward: wardCode, roomtype });
-    const res  = await fetch(`/api/bookings/his-rooms?${params}`);
+    const res  = await fetchWithTimeout(`/api/bookings/his-rooms?${params}`);
     const data = await res.json();
     if (!data.success) return;
     const rooms = data.rooms || [];
@@ -458,7 +492,7 @@ async function refreshBedList() {
   try {
     const params = new URLSearchParams({ roomtype, roomno });
     if (wardCode) params.set('ward', wardCode);
-    const res  = await fetch(`/api/bookings/his-beds?${params}`);
+    const res  = await fetchWithTimeout(`/api/bookings/his-beds?${params}`);
     const data = await res.json();
     if (!data.success) return;
     const beds = data.beds || [];
@@ -511,7 +545,7 @@ async function runPatientSearch() {
   if (!q) { box.innerHTML = ''; return; }
   box.innerHTML = '<div class="search-result-empty">กำลังค้นหา...</div>';
   try {
-    const res  = await fetch(`/api/bookings/patient-search?q=${encodeURIComponent(q)}`);
+    const res  = await fetchWithTimeout(`/api/bookings/patient-search?q=${encodeURIComponent(q)}`);
     const data = await res.json();
     if (!data.success) { box.innerHTML = `<div class="search-result-empty">เกิดข้อผิดพลาด</div>`; return; }
     const list = data.patients || [];
@@ -548,7 +582,7 @@ async function runAnInlineSearch() {
   box.style.display = 'block';
   box.innerHTML = '<div class="search-result-empty">กำลังค้นหา...</div>';
   try {
-    const res = await fetch(`/api/bookings/admission-search?q=${encodeURIComponent(q)}`);
+    const res = await fetchWithTimeout(`/api/bookings/admission-search?q=${encodeURIComponent(q)}`);
     const data = await res.json();
     if (!data.success) { box.innerHTML = '<div class="search-result-empty">เกิดข้อผิดพลาด</div>'; return; }
     const list = data.admissions || [];
@@ -595,7 +629,7 @@ async function runAnSearch() {
   if (!q) { box.innerHTML = ''; return; }
   box.innerHTML = '<div class="search-result-empty">กำลังค้นหา...</div>';
   try {
-    const res  = await fetch(`/api/bookings/admission-search?q=${encodeURIComponent(q)}`);
+    const res  = await fetchWithTimeout(`/api/bookings/admission-search?q=${encodeURIComponent(q)}`);
     const data = await res.json();
     if (!data.success) { box.innerHTML = `<div class="search-result-empty">เกิดข้อผิดพลาด</div>`; return; }
     const list = data.admissions || [];
@@ -614,7 +648,7 @@ async function runAnSearch() {
 async function fillWardByAN(an) {
   if (!an) return;
   try {
-    const res  = await fetch(`/api/bookings/info-by-an/${encodeURIComponent(an)}`);
+    const res  = await fetchWithTimeout(`/api/bookings/info-by-an/${encodeURIComponent(an)}`);
     const data = await res.json();
     if (data.success) {
       if (data.ward_name)   document.getElementById('bnWard').value   = data.ward_name;
@@ -706,24 +740,29 @@ function setBookingDateNow() {
   el.value = `${pad(now.getDate())}-${pad(now.getMonth()+1)}-${now.getFullYear()} ${pad(now.getHours())}:${pad(now.getMinutes())}:${pad(now.getSeconds())}`;
 }
 
-/* ===== ราคาห้องที่จอง (จาก room_types) ===== */
-async function loadRoomPriceTypes() {
-  const sel = document.getElementById('bnRoomPriceType');
+/* ===== ราคาห้องที่จอง (จาก room_types) — เลือกได้ 3 ลำดับ ===== */
+function populateRoomPriceSelect(sel, types) {
   if (!sel) return;
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">-- เลือกประเภทห้อง/ราคา --</option>';
+  const sorted = [...(types || [])].sort((a, b) => (+a.price_per_day) - (+b.price_per_day));
+  sorted.forEach(t => {
+    const opt = document.createElement('option');
+    opt.value = t.id;
+    opt.textContent = `${t.type_name} ${(+t.price_per_day).toLocaleString('th-TH')} บาท`;
+    sel.appendChild(opt);
+  });
+  if ([...sel.options].some(o => o.value === cur)) sel.value = cur;
+}
+
+async function loadRoomPriceTypes() {
   try {
-    const res  = await fetch('/api/rooms/types');
+    const res  = await fetchWithTimeout('/api/rooms/types');
     const data = await res.json();
     if (!data.success) return;
-    const cur = sel.value;
-    sel.innerHTML = '<option value="">-- เลือกประเภทห้อง/ราคา --</option>';
-    const sorted = [...(data.types || [])].sort((a, b) => (+a.price_per_day) - (+b.price_per_day));
-    sorted.forEach(t => {
-      const opt = document.createElement('option');
-      opt.value = t.id;
-      opt.textContent = `${t.type_name} ${(+t.price_per_day).toLocaleString('th-TH')} บาท`;
-      sel.appendChild(opt);
+    ['bnRoomPriceType1', 'bnRoomPriceType2', 'bnRoomPriceType3'].forEach(id => {
+      populateRoomPriceSelect(document.getElementById(id), data.types);
     });
-    if ([...sel.options].some(o => o.value === cur)) sel.value = cur;
   } catch(e) {}
 }
 
@@ -759,7 +798,7 @@ async function submitBooking() {
 
   showLoading(true);
   try {
-    const res = await fetch('/api/bookings', {
+    const res = await fetchWithTimeout('/api/bookings', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -808,20 +847,27 @@ async function addToWaitlist() {
   const rightsType  = document.getElementById('bnRightsType').value;
   const wardCode    = document.getElementById('bnWardFilter').value;
   const ward        = document.getElementById('bnWard').value.trim();
-  const priceTypeSel= document.getElementById('bnRoomPriceType');
-  const priceTypeId = priceTypeSel?.value || null;
-  const priceTypeName = priceTypeSel?.value ? (priceTypeSel.options[priceTypeSel.selectedIndex]?.text || null) : null;
+
+  function readPriceType(id) {
+    const sel = document.getElementById(id);
+    const value = sel?.value || null;
+    const name = value ? (sel.options[sel.selectedIndex]?.text || null) : null;
+    return { id: value, name };
+  }
+  const priceType1 = readPriceType('bnRoomPriceType1');
+  const priceType2 = readPriceType('bnRoomPriceType2');
+  const priceType3 = readPriceType('bnRoomPriceType3');
 
   if (!hn) return toast('กรุณากรอก HN', 'warning');
   if (!patientName) return toast('กรุณาค้นหาข้อมูลผู้ป่วยก่อน', 'warning');
 
   showLoading(true);
   try {
-    const res = await fetch('/api/waitlist', {
+    const res = await fetchWithTimeout('/api/waitlist', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        hn, patient_name: patientName, room_type_id: priceTypeId,
+        hn, patient_name: patientName, room_type_id: priceType1.id,
         rights_type: rightsType, notes,
         an, ward,
         doctor_name: document.getElementById('bnDoctor').value.trim(),
@@ -831,8 +877,10 @@ async function addToWaitlist() {
         contact_name: contactName, contact_phone: contactPhone,
         priority_type: (document.getElementById('bnPriorityType') || {}).value || null,
         roomtype_code: roomtype || null,
-        roomtype_name: priceTypeName,
-        no_room_reason: noRoomReason
+        roomtype_name: priceType1.name,
+        room_type_id_2: priceType2.id, roomtype_name_2: priceType2.name,
+        room_type_id_3: priceType3.id, roomtype_name_3: priceType3.name,
+        no_pay_reason: noRoomReason
       })
     });
     const data = await res.json();
@@ -856,8 +904,10 @@ function clearBookingForm() {
   });
   const pt = document.getElementById('bnPriorityType');
   if (pt) pt.value = '';
-  const rpt = document.getElementById('bnRoomPriceType');
-  if (rpt) rpt.value = '';
+  ['bnRoomPriceType1', 'bnRoomPriceType2', 'bnRoomPriceType3'].forEach(id => {
+    const rpt = document.getElementById(id);
+    if (rpt) rpt.value = '';
+  });
   const co = document.getElementById('bnCheckOut');
   if (co) co.value = '';
   const wf = document.getElementById('bnWardFilter'); if (wf) wf.value = '';
@@ -877,7 +927,7 @@ async function loadReservations() {
   if (!wrap) return;
   wrap.innerHTML = '<div style="text-align:center;color:#90A4AE;padding:40px 0;font-size:14px">กำลังโหลดข้อมูล...</div>';
   try {
-    const res = await fetch('/api/bookings');
+    const res = await fetchWithTimeout('/api/bookings');
     const data = await res.json();
     if (!data.success) { wrap.innerHTML = '<div style="text-align:center;color:#e57373;padding:40px 0">โหลดข้อมูลไม่สำเร็จ</div>'; return; }
     const allList = (data.bookings || []).filter(b => b.status === 'reserved' || b.status === 'occupied');
@@ -947,7 +997,7 @@ async function confirmCheckin() {
   if (!id) return;
   showLoading(true);
   try {
-    const res  = await fetch(`/api/bookings/${id}/checkin`, { method: 'PATCH' });
+    const res  = await fetchWithTimeout(`/api/bookings/${id}/checkin`, { method: 'PATCH' });
     const data = await res.json();
     toast(data.message, data.success ? 'success' : 'error');
     if (data.success) {
@@ -965,7 +1015,7 @@ async function confirmCheckin() {
 async function loadWaitlist() {
   try {
     const filterVal = document.querySelector('input[name="waitlistFilter"]:checked')?.value || 'waiting';
-    const res = await fetch('/api/waitlist?all=true');
+    const res = await fetchWithTimeout('/api/waitlist?all=true');
     const data = await res.json();
     if (!data.success) return;
     const allList = data.list || [];
@@ -1083,7 +1133,7 @@ function clearWlDateFilter() {
 
 async function cancelWait(id) {
   if (!confirm('ยืนยันยกเลิกคิวรอนี้?')) return;
-  await fetch(`/api/waitlist/${id}/cancel`, { method: 'PATCH' });
+  await fetchWithTimeout(`/api/waitlist/${id}/cancel`, { method: 'PATCH' });
   toast('ยกเลิกคิวรอเรียบร้อย', 'success');
   refreshAllData();
 }
@@ -1150,7 +1200,7 @@ async function confirmAssign() {
   const [roomId, roomNumber] = roomVal.split('|');
   showLoading(true);
   try {
-    const res = await fetch(`/api/waitlist/${assignWaitId}/confirm`, {
+    const res = await fetchWithTimeout(`/api/waitlist/${assignWaitId}/confirm`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ room_id: roomId, room_number: roomNumber, check_in_date: checkIn, check_out_date: checkOut })
@@ -1178,7 +1228,7 @@ async function loadOccupants() {
   const panel = document.getElementById('occupantsPanel');
   panel.innerHTML = `<div class="empty-state"><div class="spinner" style="margin:0 auto"></div><p style="margin-top:12px">กำลังโหลด...</p></div>`;
   try {
-    const res  = await fetch('/api/bookings/occupants');
+    const res  = await fetchWithTimeout('/api/bookings/occupants');
     const data = await res.json();
     if (!data.success) {
       panel.innerHTML = `<div class="alert alert-error" style="margin:16px">❌ ${data.message}</div>`;
@@ -1291,7 +1341,7 @@ async function loadRoomBookings(bedno) {
       <div class="spinner" style="margin:0 auto;width:28px;height:28px;border-width:3px"></div>
     </div>`;
   try {
-    const res  = await fetch(`/api/bookings/room-bookings/${encodeURIComponent(bedno)}`);
+    const res  = await fetchWithTimeout(`/api/bookings/room-bookings/${encodeURIComponent(bedno)}`);
     const data = await res.json();
     if (!data.success) throw new Error(data.message);
 
@@ -1330,7 +1380,7 @@ async function loadRoomBookings(bedno) {
 
 async function doPendingDischarge(id) {
   showLoading(true);
-  const res = await fetch(`/api/bookings/${id}/pending-discharge`, { method: 'PATCH' });
+  const res = await fetchWithTimeout(`/api/bookings/${id}/pending-discharge`, { method: 'PATCH' });
   const data = await res.json();
   showLoading(false);
   toast(data.message, data.success ? 'success' : 'error');
@@ -1339,7 +1389,7 @@ async function doPendingDischarge(id) {
 
 async function doCheckin(id) {
   showLoading(true);
-  const res = await fetch(`/api/bookings/${id}/checkin`, { method: 'PATCH' });
+  const res = await fetchWithTimeout(`/api/bookings/${id}/checkin`, { method: 'PATCH' });
   const data = await res.json();
   showLoading(false);
   toast(data.message, data.success ? 'success' : 'error');
@@ -1349,7 +1399,7 @@ async function doCheckin(id) {
 async function doCheckout(id) {
   if (!confirm('ยืนยัน Check-out?')) return;
   showLoading(true);
-  const res = await fetch(`/api/bookings/${id}/checkout`, { method: 'PATCH' });
+  const res = await fetchWithTimeout(`/api/bookings/${id}/checkout`, { method: 'PATCH' });
   const data = await res.json();
   showLoading(false);
   toast(data.message, data.success ? 'success' : 'error');
@@ -1359,7 +1409,7 @@ async function doCheckout(id) {
 async function doCancel(id) {
   if (!confirm('ยืนยันยกเลิกการจอง?')) return;
   showLoading(true);
-  const res = await fetch(`/api/bookings/${id}/cancel`, { method: 'PATCH' });
+  const res = await fetchWithTimeout(`/api/bookings/${id}/cancel`, { method: 'PATCH' });
   const data = await res.json();
   showLoading(false);
   toast(data.message, data.success ? 'success' : 'error');
@@ -1371,7 +1421,7 @@ async function seedDemo() {
   if (!confirm('เพิ่มข้อมูลห้องพักตัวอย่างสำหรับทดสอบ?')) return;
   showLoading(true);
   try {
-    const res = await fetch('/api/rooms/seed-demo', { method: 'POST' });
+    const res = await fetchWithTimeout('/api/rooms/seed-demo', { method: 'POST' });
     const data = await res.json();
     toast(data.message, data.success ? 'success' : 'error');
     if (data.success) await loadRooms();
@@ -1391,7 +1441,7 @@ async function loadAllQueue() {
   if (!wrap) return;
   wrap.innerHTML = '<div style="text-align:center;color:#90A4AE;padding:40px 0;font-size:14px">กำลังโหลดข้อมูล...</div>';
   try {
-    const res  = await fetch('/api/bookings/allqueue');
+    const res  = await fetchWithTimeout('/api/bookings/allqueue');
     const data = await res.json();
     if (!data.success) throw new Error(data.message);
 
@@ -1401,6 +1451,8 @@ async function loadAllQueue() {
       ward: w.ipt_ward_name || w.booked_ward || '-',
       room_number: '-',
       type_name: w.type_name || '-',
+      type_name_2: w.type_name_2 || '-',
+      type_name_3: w.type_name_3 || '-',
       rights_type: w.rights_type,
       date: w.request_date,
       check_in_date: w.check_in_date,
@@ -1415,6 +1467,8 @@ async function loadAllQueue() {
       ward: b.ipt_ward_name || b.booked_ward || '-',
       room_number: b.room_number,
       type_name: b.type_name || '-',
+      type_name_2: '-',
+      type_name_3: '-',
       rights_type: b.rights_type,
       date: b.check_in_date || b.created_at,
       check_in_date: b.check_in_date,
@@ -1520,7 +1574,11 @@ function renderAllQueue(list) {
             <td style="padding:10px 12px">${escHtml(item.patient_name||'-')}</td>
             <td style="padding:10px 12px">${escHtml(item.ward||'-')}</td>
             <td style="padding:10px 12px;font-weight:${item.room_number!=='-'?'600':'400'}">${escHtml(item.room_number||'-')}</td>
-            <td style="padding:10px 12px">${escHtml(item.type_name||'-')}</td>
+            <td style="padding:10px 12px;font-size:12px;line-height:1.6;white-space:nowrap">
+              <div>1. ${escHtml(item.type_name||'-')}</div>
+              <div>2. ${escHtml(item.type_name_2||'-')}</div>
+              <div>3. ${escHtml(item.type_name_3||'-')}</div>
+            </td>
             <td style="padding:10px 12px">${escHtml(item.rights_type||'-')}</td>
             <td style="padding:10px 12px;font-size:12px;white-space:nowrap">${fmtDate(item.check_in_date || item.rr_est_adm_date)}</td>
             <td style="padding:10px 12px;font-size:12px;max-width:160px;white-space:normal;color:#546E7A">${escHtml(item.notes||'-')}</td>
@@ -1974,7 +2032,7 @@ async function loadWardPatients() {
   const container = document.getElementById('wardPatientsContent');
   if (container) container.innerHTML = `<div class="empty-state"><div class="spinner" style="margin:0 auto"></div><p style="margin-top:12px">กำลังโหลด...</p></div>`;
   try {
-    const res = await fetch('/api/bookings/ward-patients');
+    const res = await fetchWithTimeout('/api/bookings/ward-patients');
     const data = await res.json();
     if (!data.success) {
       if (container) container.innerHTML = `<div class="alert alert-error" style="margin:20px">❌ ${data.message}</div>`;
@@ -2089,7 +2147,7 @@ async function loadMyWardBookings() {
   const container = document.getElementById('myWardBookingsContent');
   if (container) container.innerHTML = `<div class="empty-state"><div class="spinner" style="margin:0 auto"></div><p style="margin-top:12px">กำลังโหลด...</p></div>`;
   try {
-    const res = await fetch('/api/waitlist?all=true');
+    const res = await fetchWithTimeout('/api/waitlist?all=true');
     const data = await res.json();
     if (!data.success) {
       if (container) container.innerHTML = `<div class="alert alert-error" style="margin:20px">❌ ${data.message}</div>`;
@@ -2178,7 +2236,7 @@ function renderMyWardBookings(list) {
       <thead>
         <tr style="background:#F5F7FA;color:#546E7A;font-size:12px;font-weight:700">
           ${th('#')}${th('Ward ที่จอง')}${th('HN')}${th('ชื่อ-สกุล')}${th('AN')}${th('ราคาห้องที่จอง')}
-          ${th('วันที่จะใช้ห้อง')}${th('วันที่จอง')}<th style="padding:10px 12px;text-align:center;border-bottom:1px solid #E0E0E0">สถานะ</th>
+          ${th('วันที่จะใช้ห้อง')}${th('วันที่จอง')}${th('หมายเหตุ')}<th style="padding:10px 12px;text-align:center;border-bottom:1px solid #E0E0E0">สถานะ</th>
           <th style="padding:10px 12px;text-align:center;border-bottom:1px solid #E0E0E0">จัดการ</th>
         </tr>
       </thead>
@@ -2190,13 +2248,18 @@ function renderMyWardBookings(list) {
             <td style="padding:10px 12px;font-weight:600;color:var(--primary)">${escHtml(w.hn || '-')}</td>
             <td style="padding:10px 12px">${escHtml(w.patient_name || '-')}</td>
             <td style="padding:10px 12px">${escHtml(w.an || '-')}</td>
-            <td style="padding:10px 12px">${escHtml(w.roomtype_name || w.type_name || '-')}</td>
+            <td style="padding:10px 12px;font-size:12px;line-height:1.6;white-space:nowrap">
+              <div>1. ${escHtml(w.roomtype_name || w.type_name || '-')}</div>
+              <div>2. ${escHtml(w.roomtype_name_2 || '-')}</div>
+              <div>3. ${escHtml(w.roomtype_name_3 || '-')}</div>
+            </td>
             <td style="padding:10px 12px;font-size:12px;white-space:nowrap">${fmtDate(w.check_in_date)}</td>
             <td style="padding:10px 12px;font-size:12px;white-space:nowrap">${fmtDate(w.request_date)}</td>
+            <td style="padding:10px 12px;font-size:12px;max-width:180px;white-space:normal;color:#546E7A">${escHtml(w.notes || '-')}</td>
             <td style="padding:10px 12px;text-align:center">${statusChip[w.status] || w.status || '-'}</td>
             <td style="padding:10px 12px;text-align:center">
               <button class="btn btn-secondary btn-sm" style="font-size:12px;padding:5px 10px"
-                onclick="openEditPriceModal(${w.id},'${escAttr(w.patient_name || '')}',${w.room_type_id || 'null'})">
+                onclick="goToEditBookingFromMyWard(${w.id})">
                 ✏️ เปลี่ยนราคาห้องที่เลือก</button>
             </td>
           </tr>`).join('')}
@@ -2204,46 +2267,53 @@ function renderMyWardBookings(list) {
     </table>`;
 }
 
-/* ===== EDIT PRICE MODAL ===== */
-async function openEditPriceModal(id, patientName, roomTypeId) {
-  document.getElementById('epId').value = id;
-  document.getElementById('epPatientLabel').textContent = patientName ? `ผู้ป่วย: ${patientName}` : '';
-  const sel = document.getElementById('epRoomPriceType');
-  try {
-    const res  = await fetch('/api/rooms/types');
-    const data = await res.json();
-    sel.innerHTML = '<option value="">-- เลือกประเภทห้อง/ราคา --</option>';
-    if (data.success) {
-      const sorted = [...(data.types || [])].sort((a, b) => (+a.price_per_day) - (+b.price_per_day));
-      sorted.forEach(t => {
-        const opt = document.createElement('option');
-        opt.value = t.id;
-        opt.textContent = `${t.type_name} ${(+t.price_per_day).toLocaleString('th-TH')} บาท`;
-        sel.appendChild(opt);
-      });
-    }
-  } catch(e) {}
-  sel.value = roomTypeId || '';
-  document.getElementById('editPriceModal').classList.add('show');
-}
+/* กดปุ่ม "เปลี่ยนราคาห้องที่เลือก" จากหน้า คนไข้ที่ ward ท่านเป็นคนจอง — วิ่งไปที่ฟอร์มจองห้องพิเศษ
+   พร้อมดึงข้อมูลของคนไข้คนนั้นที่เคยลงไว้มาเติมในฟอร์มให้ครบ (HN/AN ดึงข้อมูลล่าสุดจาก HIS,
+   ส่วนที่เหลือ เช่น ผู้ติดต่อ/หมายเหตุ/ราคาห้องที่จอง 3 ลำดับ ดึงจากที่บันทึกไว้ใน waiting_list) */
+async function goToEditBookingFromMyWard(id) {
+  const item = allMyWardBookings.find(w => w.id === id);
+  if (!item) { toast('ไม่พบข้อมูลรายการนี้', 'error'); return; }
 
-async function saveEditPrice() {
-  const id = document.getElementById('epId').value;
-  const roomTypeId = document.getElementById('epRoomPriceType').value || null;
-  try {
-    const res = await fetch(`/api/waitlist/${id}/price`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ room_type_id: roomTypeId })
-    });
-    const data = await res.json();
-    if (!data.success) throw new Error(data.message);
-    toast('แก้ไขราคาห้องที่จองเรียบร้อย', 'success');
-    closeModal('editPriceModal');
-    loadMyWardBookings();
-  } catch (e) {
-    toast('เกิดข้อผิดพลาด: ' + e.message, 'error');
+  switchTab('booking');
+  clearBookingForm();
+
+  if (item.hn) {
+    document.getElementById('bnHn').value = item.hn;
+    await searchPatient();
   }
+  if (item.an) {
+    document.getElementById('bnAn').value = item.an;
+    await fillWardByAN(item.an);
+  }
+
+  document.getElementById('bnContactName').value  = item.contact_name  || '';
+  document.getElementById('bnContactPhone').value = item.contact_phone || '';
+  document.getElementById('bnNotes').value        = item.notes         || '';
+  const noRoomReasonEl = document.getElementById('bnNoRoomReason');
+  if (noRoomReasonEl) noRoomReasonEl.value = item.no_pay_reason || item.no_room_reason || '';
+
+  const ptEl = document.getElementById('bnPriorityType');
+  if (ptEl && item.priority_type) ptEl.value = item.priority_type;
+
+  if (item.check_in_date) {
+    const d = new Date(item.check_in_date);
+    if (!isNaN(d)) {
+      const pad = n => String(n).padStart(2, '0');
+      document.getElementById('bnCheckIn').value =
+        `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    }
+  }
+
+  await loadRoomPriceTypes(); // ให้แน่ใจว่าตัวเลือกราคาห้องพร้อมก่อนตั้งค่า
+  const setPriceSel = (selId, value) => {
+    const sel = document.getElementById(selId);
+    if (sel && value != null) sel.value = String(value);
+  };
+  setPriceSel('bnRoomPriceType1', item.room_type_id);
+  setPriceSel('bnRoomPriceType2', item.room_type_id_2);
+  setPriceSel('bnRoomPriceType3', item.room_type_id_3);
+
+  toast(`ดึงข้อมูลการจองของ ${item.patient_name || item.hn || ''} มาที่ฟอร์มจองห้องพิเศษแล้ว`, 'success');
 }
 
 function renderHosBeds(beds) {
@@ -2420,7 +2490,7 @@ async function prefillBedBooking(bed) {
 }
 
 async function setRoomAvailable(roomId) {
-  await fetch(`/api/rooms/${roomId}/status`, {
+  await fetchWithTimeout(`/api/rooms/${roomId}/status`, {
     method: 'PATCH', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ status: 'available' })
   });
@@ -2477,7 +2547,7 @@ async function loadPriorityTypes() {
   const wrap = document.getElementById('priorityTypesWrap');
   wrap.innerHTML = '<div class="empty-state"><p>กำลังโหลด...</p></div>';
   try {
-    const res  = await fetch('/api/rooms/his-priority-types');
+    const res  = await fetchWithTimeout('/api/rooms/his-priority-types');
     const data = await res.json();
     if (!data.success) throw new Error(data.message);
     renderPriorityTypes(data.types);
@@ -2522,7 +2592,7 @@ async function addPriorityType() {
   const name  = input.value.trim();
   if (!name) { toast('กรุณากรอกชื่อประเภทผู้จอง', 'warning'); input.focus(); return; }
   try {
-    const res  = await fetch('/api/rooms/his-priority-types', {
+    const res  = await fetchWithTimeout('/api/rooms/his-priority-types', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name })
@@ -2541,7 +2611,7 @@ async function addPriorityType() {
 async function deletePriorityType(id, name) {
   if (!confirm(`ยืนยันลบ "${name}" ?`)) return;
   try {
-    const res  = await fetch(`/api/rooms/his-priority-types/${id}`, { method: 'DELETE' });
+    const res  = await fetchWithTimeout(`/api/rooms/his-priority-types/${id}`, { method: 'DELETE' });
     const data = await res.json();
     if (!data.success) throw new Error(data.message);
     toast(`ลบ "${name}" สำเร็จ`, 'success');
@@ -2573,7 +2643,7 @@ async function loadReserveStatuses() {
   const wrap = document.getElementById('reserveStatusesWrap');
   wrap.innerHTML = '<div class="empty-state"><p>กำลังโหลดข้อมูลจาก HIS...</p></div>';
   try {
-    const res = await fetch('/api/rooms/his-reserve-statuses');
+    const res = await fetchWithTimeout('/api/rooms/his-reserve-statuses');
     const data = await res.json();
     if (!data.success) throw new Error(data.message);
     renderReserveStatuses(data.statuses);
@@ -2626,7 +2696,7 @@ async function saveReserveStatusNum(input) {
   if (val === (orig ?? '')) return;
   input.disabled = true;
   try {
-    const res = await fetch(`/api/rooms/his-reserve-statuses/${encodeURIComponent(id)}`, {
+    const res = await fetchWithTimeout(`/api/rooms/his-reserve-statuses/${encodeURIComponent(id)}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ hos_guid: val === '' ? null : val })
@@ -2665,7 +2735,7 @@ async function loadHisRoomtypes() {
   const wrap = document.getElementById('hisRoomtypesWrap');
   wrap.innerHTML = '<div class="empty-state"><p>กำลังโหลดข้อมูลจาก HIS...</p></div>';
   try {
-    const res = await fetch('/api/rooms/his-roomtypes');
+    const res = await fetchWithTimeout('/api/rooms/his-roomtypes');
     const data = await res.json();
     if (!data.success) throw new Error(data.message);
     renderHisRoomtypes(data.roomtypes);
@@ -2718,7 +2788,7 @@ async function updateHisRoomtypeSpecial(code, checkbox) {
   const newVal = checkbox.checked ? 'Y' : 'N';
   checkbox.disabled = true;
   try {
-    const res = await fetch(`/api/rooms/his-roomtypes/${encodeURIComponent(code)}`, {
+    const res = await fetchWithTimeout(`/api/rooms/his-roomtypes/${encodeURIComponent(code)}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ special: newVal })
@@ -2739,7 +2809,7 @@ async function loadRoomTypesSettings() {
   const wrap = document.getElementById('roomTypesTableWrap');
   wrap.innerHTML = '<div class="empty-state"><p>กำลังโหลด...</p></div>';
   try {
-    const res = await fetch('/api/rooms/types');
+    const res = await fetchWithTimeout('/api/rooms/types');
     const data = await res.json();
     if (!data.success) throw new Error(data.message);
     settingsRoomTypes = data.types || [];
@@ -2813,7 +2883,7 @@ async function saveRoomType() {
   const food_price_per_day = parseFloat(document.getElementById('rtFoodPrice').value) || 0;
   if (!type_name) { toast('กรุณากรอกชื่อประเภทห้อง', 'warning'); return; }
   try {
-    const res = await fetch(id ? `/api/rooms/types/${id}` : '/api/rooms/types', {
+    const res = await fetchWithTimeout(id ? `/api/rooms/types/${id}` : '/api/rooms/types', {
       method: id ? 'PUT' : 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ type_name, description, price_per_day, food_price_per_day })
@@ -2833,7 +2903,7 @@ async function saveRoomType() {
 async function deleteRoomType(id, name) {
   if (!confirm(`ยืนยันลบประเภทห้อง "${name}" ?\n\nข้อมูลประเภทห้องจะถูกลบออก (ห้องที่ใช้ประเภทนี้จะไม่ถูกลบ)`)) return;
   try {
-    const res = await fetch(`/api/rooms/types/${id}`, { method: 'DELETE' });
+    const res = await fetchWithTimeout(`/api/rooms/types/${id}`, { method: 'DELETE' });
     const data = await res.json();
     if (!data.success) throw new Error(data.message);
     toast('ลบประเภทห้องสำเร็จ', 'success');

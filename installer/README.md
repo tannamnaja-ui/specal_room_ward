@@ -1,4 +1,4 @@
-# Build Special_room-system-Setup-Full.exe
+# Build Special_room-For_Nurse_IPD.exe
 
 ต้องมี: Node.js/npm, [Inno Setup 6](https://jrsoftware.org/isinfo.php) (ISCC.exe), และ .NET Framework csc.exe
 (`C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe` — มีมาให้แล้วบน Windows ส่วนใหญ่)
@@ -25,7 +25,7 @@
    ```
    "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer\setup.iss
    ```
-   ได้ไฟล์ `dist\Special_room-system-Setup-Full.exe`
+   ได้ไฟล์ `dist\Special_room-For_Nurse_IPD.exe`
 
 ## หมายเหตุ
 - Server ที่ build ด้วย `pkg` ไม่ต้องพึ่ง Node.js/DB client บนเครื่องที่ติดตั้ง (ใช้ pure-JS driver ทั้ง `pg` และ `mysql2`) จึงไม่มี prerequisite อื่นให้ต้องเช็ค/ข้ามระหว่างติดตั้ง

@@ -2,8 +2,8 @@
 ; Bundles a pkg-compiled, self-contained Node.js server (no Node.js install needed)
 ; plus a hidden-window C# launcher (no console window shown to the user).
 
-#define MyAppName "Special Room System"
-#define MyAppVersion "1.0.7"
+#define MyAppName "Special Room - For Nurse IPD"
+#define MyAppVersion "1.0.8"
 #define MyAppPublisher "Hospital Private Room System"
 #define MyAppExeName "Launcher.exe"
 
@@ -17,14 +17,14 @@ DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 OutputDir=..\dist
-OutputBaseFilename=Special_room-system-Setup-Full
+OutputBaseFilename=Special_room-For_Nurse_IPD
 SetupIconFile=icon.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
 DisableWelcomePage=no
-ArchitecturesInstallIn64BitMode=x64
+ArchitecturesInstallIn64BitMode=x64compatible
 
 [Languages]
 Name: "thai"; MessagesFile: "compiler:Languages\Thai.isl"

@@ -36,8 +36,10 @@ router.post('/', authCheck, async (req, res) => {
     hn, patient_name, room_type_id, preferred_room, rights_type, notes,
     an, ward, ward_code, doctor_name, roomtype_code, roomtype_name, bedno,
     check_in_date, check_out_date, deposit_amount, contact_name, contact_phone, priority_type,
-    no_room_reason
+    no_room_reason, no_pay_reason, room_type_id_2, roomtype_name_2, room_type_id_3, roomtype_name_3
   } = req.body;
+  // สาเหตุการไม่จ่ายห้อง เก็บที่คอลัมน์ no_pay_reason (ตามที่ใช้งานจริง) — รับ no_room_reason ไว้เผื่อ backward-compat
+  const payReason = no_pay_reason || no_room_reason || null;
   try {
     // ถ้า HN มีอยู่ในคิวรอแล้ว ให้ update แทน insert ใหม่
     const existing = await query(
@@ -48,21 +50,27 @@ router.post('/', authCheck, async (req, res) => {
       await query(
         `UPDATE waiting_list SET an=$1, patient_name=$2, ward=$3, doctor_name=$4, room_type_id=$5, preferred_room=$6,
          rights_type=$7, notes=$8, contact_name=$9, contact_phone=$10, priority_type=$11,
-         roomtype_code=$12, roomtype_name=$13, check_in_date=$14, no_room_reason=$15, request_date=CURRENT_TIMESTAMP WHERE id=$16`,
+         roomtype_code=$12, roomtype_name=$13, check_in_date=$14, no_pay_reason=$15,
+         room_type_id_2=$16, roomtype_name_2=$17, room_type_id_3=$18, roomtype_name_3=$19,
+         request_date=CURRENT_TIMESTAMP WHERE id=$20`,
         [an||null, patient_name, ward||ward_code||null, doctor_name||null,
          room_type_id, preferred_room, rights_type, notes,
          contact_name||null, contact_phone||null, priority_type||null,
-         roomtype_code||null, roomtype_name||null, check_in_date||null, no_room_reason||null, existing[0].id],
+         roomtype_code||null, roomtype_name||null, check_in_date||null, payReason,
+         room_type_id_2||null, roomtype_name_2||null, room_type_id_3||null, roomtype_name_3||null,
+         existing[0].id],
         cfg
       );
     } else {
       await query(
-        `INSERT INTO waiting_list (hn, an, patient_name, ward, doctor_name, room_type_id, preferred_room, rights_type, notes, check_in_date, contact_name, contact_phone, priority_type, roomtype_code, roomtype_name, no_room_reason, status, created_by)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,'waiting',$17)`,
+        `INSERT INTO waiting_list (hn, an, patient_name, ward, doctor_name, room_type_id, preferred_room, rights_type, notes, check_in_date, contact_name, contact_phone, priority_type, roomtype_code, roomtype_name, no_pay_reason, room_type_id_2, roomtype_name_2, room_type_id_3, roomtype_name_3, status, created_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,'waiting',$21)`,
         [hn, an||null, patient_name, ward||ward_code||null, doctor_name||null,
          room_type_id, preferred_room, rights_type, notes, check_in_date||null,
          contact_name||null, contact_phone||null, priority_type||null,
-         roomtype_code||null, roomtype_name||null, no_room_reason||null, req.session.user.login_name],
+         roomtype_code||null, roomtype_name||null, payReason,
+         room_type_id_2||null, roomtype_name_2||null, room_type_id_3||null, roomtype_name_3||null,
+         req.session.user.login_name],
         cfg
       );
     }
@@ -102,27 +110,6 @@ router.post('/', authCheck, async (req, res) => {
 
     req.io.emit('waitlist_updated');
     res.json({ success: true, message: 'เพิ่มในคิวรอเรียบร้อย' });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
-  }
-});
-
-// PATCH update ราคาห้องที่จอง (room_type_id) ของรายการในคิว
-router.patch('/:id/price', authCheck, async (req, res) => {
-  const cfg = loadSettings();
-  const { room_type_id } = req.body;
-  try {
-    let roomtypeName = null;
-    if (room_type_id) {
-      const rt = await query('SELECT type_name, price_per_day FROM room_types WHERE id = $1', [room_type_id], cfg);
-      if (rt && rt[0]) roomtypeName = `${rt[0].type_name} ${(+rt[0].price_per_day).toLocaleString('th-TH')} บาท`;
-    }
-    await query(
-      `UPDATE waiting_list SET room_type_id=$1, roomtype_name=$2 WHERE id=$3`,
-      [room_type_id || null, roomtypeName, req.params.id], cfg
-    );
-    req.io.emit('waitlist_updated');
-    res.json({ success: true, message: 'แก้ไขราคาห้องที่จองเรียบร้อย' });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
