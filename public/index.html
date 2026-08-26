@@ -251,8 +251,9 @@
             <div class="form-group" style="position:relative">
               <label>HN (Hospital Number) <span class="required-star">*</span></label>
               <div class="hn-search-group">
-                <input type="text" id="bnHn" class="form-control" placeholder="กรอก HN แล้วกด Enter"
-                  onkeydown="if(event.key==='Enter')searchPatient()">
+                <input type="text" id="bnHn" class="form-control" placeholder="กรอก HN"
+                  oninput="debounceHnAutoSearch()"
+                  onkeydown="if(event.key==='Enter'){clearTimeout(_hnAutoSearchDebounce);searchPatient()}">
                 <button class="btn btn-info" onclick="openHnSearch()">🔍 ค้นหา</button>
               </div>
             </div>
@@ -607,7 +608,7 @@
           <!-- กล่อง: ตั้งค่าราคาห้องพิเศษ -->
           <div style="background:#fff;border-radius:14px;box-shadow:0 2px 12px rgba(0,0,0,.07);overflow:hidden">
             <div class="section-header collapsible-header" onclick="toggleRoomTypesSettings()" style="cursor:pointer;user-select:none">
-              <h3>💰 ตั้งค่าราคาห้องพิเศษ</h3>
+              <h3>💰 ตั้งค่าราคาห้องพิเศษ (room_types)</h3>
               <div style="display:flex;align-items:center;gap:10px">
                 <button class="btn btn-primary btn-sm" id="rtAddBtn"
                   onclick="event.stopPropagation();openRoomTypeModal()" style="display:none">➕ เพิ่มประเภทห้อง</button>

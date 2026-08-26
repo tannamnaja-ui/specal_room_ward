@@ -150,8 +150,8 @@ function closeModal(id) {
 async function loadRooms() {
   try {
     const [roomsRes, statsRes] = await Promise.all([
-      fetch('/api/rooms'),
-      fetch('/api/rooms/stats')
+      fetchWithTimeout('/api/rooms'),
+      fetchWithTimeout('/api/rooms/stats')
     ]);
     const roomsData = await roomsRes.json();
     const statsData = await statsRes.json();
@@ -530,6 +530,15 @@ function debounceSearch(type) {
   _searchDebounce = setTimeout(() => type === 'hn' ? runPatientSearch() : runAnSearch(), 350);
 }
 
+/* ===== HN AUTO-SEARCH (ในฟอร์มจองห้องพิเศษ) — ค้นหาอัตโนมัติระหว่างพิมพ์ ไม่ต้องรอกด Enter ===== */
+let _hnAutoSearchDebounce = null;
+function debounceHnAutoSearch() {
+  clearTimeout(_hnAutoSearchDebounce);
+  const hn = document.getElementById('bnHn').value.trim();
+  if (!hn) return;
+  _hnAutoSearchDebounce = setTimeout(() => searchPatient(), 350);
+}
+
 function openHnSearch() {
   const hn = document.getElementById('bnHn').value.trim();
   document.getElementById('hnSearchInput').value = hn;
@@ -692,12 +701,14 @@ async function searchPatient() {
 
   showLoading(true);
   try {
-    const [pRes, rRes] = await Promise.all([
-      fetch(`/api/bookings/patient/${hn}`),
-      fetch(`/api/bookings/rights/${hn}`)
+    const [pRes, rRes, anRes] = await Promise.all([
+      fetchWithTimeout(`/api/bookings/patient/${hn}`),
+      fetchWithTimeout(`/api/bookings/rights/${hn}`),
+      fetchWithTimeout(`/api/bookings/an-by-hn/${hn}`)
     ]);
     const pData = await pRes.json();
     const rData = await rRes.json();
+    const anData = await anRes.json();
 
     const box = document.getElementById('patientInfoBox');
     if (pData.success) {
@@ -711,7 +722,16 @@ async function searchPatient() {
       document.getElementById('bnRightsType').value        = rightsVal;
       document.getElementById('bnRightsDisplay').value     = rightsDisplay;
       box.classList.add('show');
-      toast(`พบข้อมูลผู้ป่วย: ${pData.patient.patient_name}`, 'success');
+
+      // ถ้าเจอ AN ที่ยังไม่ confirm_discharge (ยังนอนอยู่) ให้ดึงข้อมูล admit มาเติมให้ครบ
+      // เหมือนกับตอนค้นหา/เลือกด้วย AN โดยตรง
+      if (anData.success && anData.an) {
+        document.getElementById('bnAn').value = anData.an;
+        await fillWardByAN(anData.an);
+        toast(`พบข้อมูลผู้ป่วย: ${pData.patient.patient_name} (พบ Admission ${anData.an} ที่ยังไม่จำหน่าย)`, 'success');
+      } else {
+        toast(`พบข้อมูลผู้ป่วย: ${pData.patient.patient_name}`, 'success');
+      }
     } else {
       box.classList.remove('show');
       toast(pData.message, 'warning');
@@ -1867,8 +1887,8 @@ async function loadHosBeds() {
   if (container) container.innerHTML = `<div class="empty-state"><div class="spinner" style="margin:0 auto"></div><p style="margin-top:12px">กำลังโหลด...</p></div>`;
   try {
     const [hosbedRes, occupantsRes] = await Promise.all([
-      fetch('/api/rooms/hosbed'),
-      fetch('/api/bookings/occupants')
+      fetchWithTimeout('/api/rooms/hosbed'),
+      fetchWithTimeout('/api/bookings/occupants')
     ]);
     const hosbedData    = await hosbedRes.json();
     const occupantsData = await occupantsRes.json();

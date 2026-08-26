@@ -92,6 +92,25 @@ router.get('/patient/:hn', authCheck, async (req, res) => {
   }
 });
 
+// หา AN ที่ยัง confirm_discharge ไม่เป็น 'Y' จาก HN (ใช้ตอนคีย์ค้นหาด้วย HN ในฟอร์มจอง
+// เพื่อดึงข้อมูล admit มาแสดงให้ครบเหมือนค้นหาด้วย AN โดยตรง)
+router.get('/an-by-hn/:hn', authCheck, async (req, res) => {
+  const cfg = loadSettings();
+  const { hn } = req.params;
+  try {
+    const rows = await query(
+      `SELECT an FROM ipt WHERE hn = $1 AND (confirm_discharge IS NULL OR confirm_discharge <> 'Y') ORDER BY regdate DESC LIMIT 1`,
+      [hn], cfg
+    );
+    if (rows && rows.length > 0 && rows[0].an) {
+      return res.json({ success: true, an: rows[0].an });
+    }
+    res.json({ success: false, message: 'ไม่พบ Admission ที่ยังไม่ยืนยันจำหน่ายสำหรับ HN นี้' });
+  } catch (err) {
+    res.json({ success: false, message: err.message });
+  }
+});
+
 // Get ward + doctor from AN (single call)
 router.get('/info-by-an/:an', authCheck, async (req, res) => {
   const cfg = loadSettings();
