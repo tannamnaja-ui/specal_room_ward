@@ -26,6 +26,12 @@
   --status-cleaning-bg: #ECEFF1;
   --status-pending: #6A1B9A;
   --status-pending-bg: #E3F2FD;
+  --status-repair: #F9A825;
+  --status-repair-bg: #FFFDE7;
+  --status-isolation: #7B1FA2;
+  --status-isolation-bg: #F3E5F5;
+  --status-relative: #1565C0;
+  --status-relative-bg: #E3F2FD;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -639,13 +645,13 @@ tr:hover td { background: #FAFBFC; }
 }
 
 /* ===== BED STATUS FILTER BUTTONS ===== */
-.bed-filter-btn, .dash-bed-filter-btn {
+.bed-filter-btn, .dash-bed-filter-btn, .manage-rooms-filter-btn {
   padding: 5px 12px; border-radius: 20px; border: 1.5px solid #CFD8DC;
   background: #fff; font-size: 12px; font-weight: 600; color: #546E7A;
   cursor: pointer; transition: all .18s; white-space: nowrap;
 }
-.bed-filter-btn:hover, .dash-bed-filter-btn:hover { border-color: var(--primary); color: var(--primary); background: #E3F2FD; }
-.bed-filter-btn.active, .dash-bed-filter-btn.active { background: var(--primary); border-color: var(--primary); color: #fff; }
+.bed-filter-btn:hover, .dash-bed-filter-btn:hover, .manage-rooms-filter-btn:hover { border-color: var(--primary); color: var(--primary); background: #E3F2FD; }
+.bed-filter-btn.active, .dash-bed-filter-btn.active, .manage-rooms-filter-btn.active { background: var(--primary); border-color: var(--primary); color: #fff; }
 
 /* ===== HOS BED LAYOUT ===== */
 .ward-section {
@@ -674,11 +680,11 @@ tr:hover td { background: #FAFBFC; }
   display: inline-block; margin-bottom: 10px;
 }
 .beds-row {
-  display: flex; flex-wrap: wrap; gap: 8px;
+  display: grid; grid-template-columns: repeat(10, 1fr); gap: 8px;
 }
 
 .bed-box {
-  width: 72px; min-height: 64px;
+  width: 100%; min-height: 64px;
   border-radius: 10px; border: 2px solid;
   display: flex; flex-direction: column;
   align-items: center; justify-content: center;
@@ -732,6 +738,25 @@ tr:hover td { background: #FAFBFC; }
 .bed-unknown .bed-number { color: #9E9E9E; }
 .bed-unknown .bed-status-dot { background: #BDBDBD; }
 
+.bed-repair        { background: var(--status-repair-bg); border-color: #FFE082; }
+.bed-repair .bed-number { color: var(--status-repair); }
+.bed-repair .bed-status-dot { background: var(--status-repair); animation: pulse-yellow 1.5s infinite; }
+.bed-repair .bed-patient { color: var(--status-repair); }
+
+.bed-isolation     { background: var(--status-isolation-bg); border-color: #CE93D8; }
+.bed-isolation .bed-number { color: var(--status-isolation); }
+.bed-isolation .bed-status-dot { background: var(--status-isolation); animation: pulse-purple 1.5s infinite; }
+.bed-isolation .bed-patient { color: var(--status-isolation); }
+
+.bed-relative      { background: var(--status-relative-bg); border-color: #90CAF9; }
+.bed-relative .bed-number { color: var(--status-relative); }
+.bed-relative .bed-status-dot { background: var(--status-relative); }
+.bed-relative .bed-patient { color: var(--status-relative); }
+
+.bed-status-note {
+  font-size: 9px; font-weight: 700; line-height: 1.2; margin-top: 2px;
+}
+
 /* ===== RESPONSIVE ===== */
 @media (max-width: 768px) {
   .sidebar { width: 60px; }
@@ -778,6 +803,34 @@ tr:hover td { background: #FAFBFC; }
 .price-rank-3 label { color: #00695C; font-weight: 700; }
 .price-rank-3 .price-rank-select { border-color: #4DB6AC; background-color: #EEFAF8; }
 .price-rank-3 .price-rank-select:focus { border-color: #00897B; box-shadow: 0 0 0 3px rgba(0,137,123,0.18); }
+
+/* ล็อกลำดับที่ยังเลือกไม่ได้ — ใช้ pointer-events:none แทน disabled จริง เพื่อให้ div ครอบดักคลิกได้ทุกครั้ง (ไม่ใช่แค่ตอน hover ค้าง) */
+.price-rank-select.locked { pointer-events: none; opacity: .55; background-color: #EEEEEE !important; border-color: #CFD8DC !important; cursor: not-allowed; }
+.price-rank-2, .price-rank-3 { cursor: pointer; }
+
+/* ===== REPORT CARDS (สรุปรายงานการใช้ห้อง) ===== */
+.report-cards-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 14px;
+}
+.report-card {
+  background: #fff; border-radius: 14px; padding: 20px;
+  box-shadow: 0 2px 12px rgba(0,0,0,.07);
+  cursor: pointer; transition: all .2s;
+  border-left: 4px solid var(--primary, #2E7D32);
+  display: flex; flex-direction: column; gap: 8px;
+}
+.report-card:hover { transform: translateY(-3px); box-shadow: 0 6px 18px rgba(0,0,0,.12); }
+.report-card .report-card-icon { font-size: 28px; }
+.report-card .report-card-title { font-size: 15px; font-weight: 700; color: #263238; }
+.report-card .report-card-desc { font-size: 12px; color: #90A4AE; line-height: 1.4; }
+@media (max-width: 900px) {
+  .report-cards-grid { grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 600px) {
+  .report-cards-grid { grid-template-columns: 1fr; }
+}
 
 .required-star { color: #C62828; margin-left: 3px; }
 
@@ -827,7 +880,9 @@ tr:hover td { background: #FAFBFC; }
   border-radius: 20px;
   font-size: 12px;
   font-weight: 600;
+  white-space: nowrap;
 }
+.chip-available  { background: #E8F5E9; color: #2E7D32; }
 .chip-reserved   { background: #FFF8E1; color: #F57F17; }
 .chip-occupied   { background: #FFEBEE; color: #C62828; }
 .chip-checkedout { background: #ECEFF1; color: #546E7A; }

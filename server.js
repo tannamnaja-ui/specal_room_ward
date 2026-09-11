@@ -10,6 +10,7 @@ const authRouter = require('./routes/auth');
 const roomsRouter = require('./routes/rooms');
 const bookingsRouter = require('./routes/bookings');
 const waitlistRouter = require('./routes/waitlist');
+const reportsRouter = require('./routes/reports');
 
 const app = express();
 const server = http.createServer(app);
@@ -48,6 +49,7 @@ app.use('/api/auth', authRouter);
 app.use('/api/rooms', roomsRouter);
 app.use('/api/bookings', bookingsRouter);
 app.use('/api/waitlist', waitlistRouter);
+app.use('/api/reports', reportsRouter);
 
 io.on('connection', (socket) => {
   console.log('Client connected:', socket.id);

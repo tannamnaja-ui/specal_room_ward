@@ -92,12 +92,25 @@ async function ensureTablesInternal(cfg) {
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
   )`, [], cfg);
 
+  // ประวัติซ่อมแซม/แยกโรคของแต่ละเตียง (ตารางของแอปเอง ไม่ใช่ตาราง HIS) — 1 แถวต่อ 1 ครั้งที่ซ่อม/แยกโรค
+  await query(`CREATE TABLE IF NOT EXISTS bed_status_history (
+    id ${autoInc},
+    bedno VARCHAR(20),
+    status_type_id INT,
+    status_name VARCHAR(50),
+    start_date TIMESTAMP,
+    end_date TIMESTAMP,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  )`, [], cfg);
+
   // Migrate existing tables: add new columns if missing
   const alterCols = {
-    bookings: ['booking_ref VARCHAR(20)', 'an VARCHAR(20)', 'ward VARCHAR(100)', 'doctor_name VARCHAR(200)', 'deposit_amount DECIMAL(10,2) DEFAULT 0', 'contact_name VARCHAR(200)', 'contact_phone VARCHAR(50)', 'priority_type VARCHAR(200)'],
+    bookings: ['booking_ref VARCHAR(20)', 'an VARCHAR(20)', 'ward VARCHAR(100)', 'doctor_name VARCHAR(200)', 'deposit_amount DECIMAL(10,2) DEFAULT 0', 'contact_name VARCHAR(200)', 'contact_phone VARCHAR(50)', 'priority_type VARCHAR(200)', 'waiting_list_id INT'],
     room_types: ['food_price_per_day DECIMAL(10,2) DEFAULT 0'],
     rooms: ['ward VARCHAR(100)'],
-    waiting_list: ['an VARCHAR(20)', 'ward VARCHAR(100)', 'doctor_name VARCHAR(200)', 'contact_name VARCHAR(200)', 'contact_phone VARCHAR(50)', 'priority_type VARCHAR(200)', 'roomtype_code VARCHAR(50)', 'roomtype_name VARCHAR(200)', 'check_in_date VARCHAR(50)', 'no_room_reason TEXT', 'room_type_id_2 INT', 'roomtype_name_2 VARCHAR(200)', 'room_type_id_3 INT', 'roomtype_name_3 VARCHAR(200)', 'no_pay_reason TEXT']
+    waiting_list: ['an VARCHAR(20)', 'ward VARCHAR(100)', 'doctor_name VARCHAR(200)', 'contact_name VARCHAR(200)', 'contact_phone VARCHAR(50)', 'priority_type VARCHAR(200)', 'roomtype_code VARCHAR(50)', 'roomtype_name VARCHAR(200)', 'check_in_date VARCHAR(50)', 'no_room_reason TEXT', 'room_type_id_2 INT', 'roomtype_name_2 VARCHAR(200)', 'room_type_id_3 INT', 'roomtype_name_3 VARCHAR(200)', 'no_pay_reason TEXT'],
+    // ตาราง bedno เป็นตารางของ HIS เอง (ไม่ใช่ตารางที่แอปนี้สร้าง) — เพิ่มฟิลวันที่+เวลาซ่อมเตียง/วันที่ใช้เป็นห้องแยกโรค
+    bedno: ['repair_start_date TIMESTAMP', 'repair_end_date TIMESTAMP', 'isolation_start_date TIMESTAMP', 'isolation_end_date TIMESTAMP']
   };
   for (const [tbl, cols] of Object.entries(alterCols)) {
     for (const col of cols) {
@@ -110,6 +123,36 @@ async function ensureTablesInternal(cfg) {
         }
       } catch {}
     }
+  }
+
+  // ฟิลวันที่ซ่อม/แยกโรคของ bedno เดิมเป็น DATE (ไม่มีเวลา) — อัปเกรดเป็น TIMESTAMP ให้คำนวณจำนวนชั่วโมงได้จริง
+  const bednoDateCols = ['repair_start_date', 'repair_end_date', 'isolation_start_date', 'isolation_end_date'];
+  for (const col of bednoDateCols) {
+    try {
+      if (isPg) {
+        await query(`ALTER TABLE bedno ALTER COLUMN ${col} TYPE TIMESTAMP USING ${col}::timestamp`, [], cfg);
+      } else {
+        await query(`ALTER TABLE bedno MODIFY COLUMN ${col} TIMESTAMP NULL`, [], cfg);
+      }
+    } catch {}
+  }
+}
+
+// บันทึก/อัปเดตประวัติซ่อมแซม-แยกโรค 1 ครั้ง ผูกด้วย (bedno, status_type_id, start_date)
+// ถ้าเจอแถวเดิมที่ start_date ตรงกัน แปลว่าเป็นการแก้ไขครั้งเดิม (เช่น เพิ่งมาใส่วันที่เสร็จทีหลัง) ให้ update แทนการเพิ่มซ้ำ
+async function upsertBedStatusHistory(cfg, bedno, statusTypeId, statusName, startDate, endDate) {
+  if (!startDate) return;
+  const existing = await query(
+    `SELECT id FROM bed_status_history WHERE bedno=$1 AND status_type_id=$2 AND start_date=$3 LIMIT 1`,
+    [bedno, statusTypeId, startDate], cfg
+  );
+  if (existing && existing.length > 0) {
+    await query(`UPDATE bed_status_history SET end_date=$1 WHERE id=$2`, [endDate || null, existing[0].id], cfg);
+  } else {
+    await query(
+      `INSERT INTO bed_status_history (bedno, status_type_id, status_name, start_date, end_date) VALUES ($1,$2,$3,$4,$5)`,
+      [bedno, statusTypeId, statusName, startDate, endDate || null], cfg
+    );
   }
 }
 
@@ -179,17 +222,27 @@ const SQL_AVAILABLE_BEDS = `
 `;
 
 const SQL_ALL_BEDS = `
-  SELECT w.name as ward, rt.name as roomtype, rt.roomtype as roomtype_code, b.bedno, r.ward as ward_code, r.roomno, nd.price
+  SELECT w.name as ward, rt.name as roomtype, rt.roomtype as roomtype_code, b.bedno, r.ward as ward_code, r.roomno, nd.price,
+         b.bed_status_type_id, bst.bed_status_type_name, b.repair_start_date, b.isolation_start_date
   FROM bedno b
   LEFT OUTER JOIN roomno r ON r.roomno = b.roomno
   LEFT OUTER JOIN ward w ON w.ward = r.ward
   LEFT OUTER JOIN roomtype rt ON rt.roomtype = r.roomtype
   LEFT OUTER JOIN nondrugitems nd ON nd.icode = b.room_charge_icode
+  LEFT OUTER JOIN bed_status_type bst ON bst.bed_status_type_id = b.bed_status_type_id
   WHERE rt.hos_guid = 'Y'
     AND w.ward_active = 'Y'
-    AND b.bed_status_type_id = 1
+    AND b.bed_status_type_id <> 3
   ORDER BY w.name, rt.name, b.bedno
 `;
+
+// bed_status_type_id: 1=เตียงใช้งาน 2=จ่ายเตียง(ญาติใช้ห้อง) 3=ปิดเตียง(ไม่แสดง) 4=ซ่อมแซม 5=แยกโรค
+function deriveBedStatus(row, availSet) {
+  if (row.bed_status_type_id === 4) return 'repair';
+  if (row.bed_status_type_id === 5) return 'isolation';
+  if (row.bed_status_type_id === 2) return 'relative';
+  return availSet.has(row.bedno) ? 'available' : 'occupied';
+}
 
 // GET /api/rooms/hosbed - derive status from HIS queries
 router.get('/hosbed', authCheck, async (req, res) => {
@@ -210,12 +263,177 @@ router.get('/hosbed', authCheck, async (req, res) => {
       roomno:        row.roomno,
       bedno:         row.bedno,
       price:         row.price,
-      room_status: availSet.has(row.bedno) ? 'available' : 'occupied'
+      repair_start_date:    row.repair_start_date,
+      isolation_start_date: row.isolation_start_date,
+      room_status: deriveBedStatus(row, availSet)
     }));
 
     res.json({ success: true, beds });
   } catch (err) {
     console.error('GET /api/rooms/hosbed error:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// GET /api/rooms/manage-special-rooms - สถานะเตียงห้องพิเศษทุกวอร์ด (เตียงใช้งาน/ซ่อมแซม — ไม่รวมเตียงที่ปิด)
+router.get('/manage-special-rooms', authCheck, async (req, res) => {
+  const cfg = loadSettings();
+  try {
+    const rows = await query(`
+      select w.name as ward, rt.name as roomtype, b.bedno, b.bed_status_type_id,
+             case when b.bed_status_type_id = 1 and occ.an is not null
+                  then 'มีผู้ป่วยใช้ห้อง' else bs.bed_status_type_name end as bed_status_type_name,
+             case
+               when b.bed_status_type_id = 4 then 'repair'
+               when b.bed_status_type_id = 5 then 'isolation'
+               when b.bed_status_type_id = 2 then 'relative'
+               when b.bed_status_type_id = 1 and occ.an is not null then 'occupied'
+               when b.bed_status_type_id = 1 then 'available'
+               else 'other'
+             end as status_key,
+             nd.price,
+             b.repair_start_date, b.repair_end_date, b.isolation_start_date, b.isolation_end_date
+      from bedno b
+      left join roomno r on r.roomno=b.roomno
+      left join bed_status_type bs on bs.bed_status_type_id=b.bed_status_type_id
+      left join ward w on w.ward=r.ward
+      left join roomtype  rt on rt.roomtype=r.roomtype
+      left join nondrugitems nd on nd.icode = b.room_charge_icode
+      left join bedtype bt on bt.bedtype=b.bedtype
+      left join (
+        select d.bedno, d.an from iptadm d join ipt on d.an = ipt.an where ipt.dchdate is null
+      ) occ on occ.bedno = b.bedno
+      where w.ward_active='Y' and rt.hos_guid='Y' and b.bed_status_type_id <> 3
+        and bt.hos_guid='Y'
+      order by w.name,rt.name,b.bedno,bed_status_type_name
+    `, [], cfg);
+    res.json({ success: true, beds: rows });
+  } catch (err) {
+    console.error('GET /api/rooms/manage-special-rooms error:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// GET /api/rooms/bed-detail/:bedno - รายละเอียดทุกฟิลของเตียง (สำหรับ popup แก้ไข)
+router.get('/bed-detail/:bedno', authCheck, async (req, res) => {
+  const cfg = loadSettings();
+  try {
+    await ensureTables(cfg); // การันตีว่า bedno มีฟิล repair_start_date/repair_end_date แล้ว
+    const rows = await query(`
+      SELECT b.*, nd.price as special_room_price
+      FROM bedno b
+      LEFT JOIN nondrugitems nd ON nd.icode = b.room_charge_icode
+      WHERE b.bedno = $1 LIMIT 1
+    `, [req.params.bedno], cfg);
+    if (!rows || rows.length === 0) return res.status(404).json({ success: false, message: 'ไม่พบเตียงนี้' });
+    res.json({ success: true, bed: rows[0] });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// PATCH /api/rooms/bed-detail/:bedno - บันทึกการแก้ไขเตียงลงตาราง bedno จริง (ยกเว้น bedno เอง)
+router.patch('/bed-detail/:bedno', authCheck, async (req, res) => {
+  const cfg = loadSettings();
+  const {
+    roomno, bedtype, bed_status_type_id, bed_order,
+    repair_start_date, repair_end_date,
+    isolation_start_date, isolation_end_date
+  } = req.body;
+  try {
+    await ensureTables(cfg);
+    await query(
+      `UPDATE bedno SET roomno=$1, bedtype=$2, bed_status_type_id=$3, bed_order=$4, repair_start_date=$5, repair_end_date=$6,
+       isolation_start_date=$7, isolation_end_date=$8
+       WHERE bedno=$9`,
+      [
+        roomno || null,
+        bedtype || null,
+        bed_status_type_id || null,
+        bed_order || null,
+        repair_start_date || null,
+        repair_end_date || null,
+        isolation_start_date || null,
+        isolation_end_date || null,
+        req.params.bedno
+      ],
+      cfg
+    );
+
+    const statusIdNum = bed_status_type_id ? Number(bed_status_type_id) : null;
+    if (statusIdNum === 4) {
+      await upsertBedStatusHistory(cfg, req.params.bedno, 4, 'ซ่อมแซม', repair_start_date || null, repair_end_date || null);
+    } else if (statusIdNum === 5) {
+      await upsertBedStatusHistory(cfg, req.params.bedno, 5, 'แยกโรค', isolation_start_date || null, isolation_end_date || null);
+    }
+
+    req.io.emit('room_updated');
+    res.json({ success: true, message: 'บันทึกข้อมูลเตียงเรียบร้อย' });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// GET /api/rooms/bed-status-history - ประวัติซ่อมแซม/แยกโรคทั้งหมด (หรือกรองเฉพาะเตียงเดียวด้วย ?bedno=)
+router.get('/bed-status-history', authCheck, async (req, res) => {
+  const cfg = loadSettings();
+  try {
+    await ensureTables(cfg);
+    const { bedno } = req.query;
+    const params = [];
+    let where = '';
+    if (bedno) { params.push(bedno); where = 'WHERE h.bedno = $1'; }
+    const rows = await query(`
+      SELECT h.*, rn.name as room_name, w.name as ward_name
+      FROM bed_status_history h
+      LEFT JOIN bedno b ON b.bedno = h.bedno
+      LEFT JOIN roomno rn ON rn.roomno = b.roomno
+      LEFT JOIN ward w ON w.ward = rn.ward
+      ${where}
+      ORDER BY h.start_date DESC
+    `, params, cfg);
+    res.json({ success: true, history: rows });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// GET /api/rooms/bed-status-types - ตัวเลือกสถานะเตียงทั้งหมด (bed_status_type)
+router.get('/bed-status-types', authCheck, async (req, res) => {
+  const cfg = loadSettings();
+  try {
+    const rows = await query(`SELECT bed_status_type_id, bed_status_type_name FROM bed_status_type ORDER BY bed_status_type_id`, [], cfg);
+    res.json({ success: true, types: rows });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// GET /api/rooms/bedtypes - ตัวเลือกประเภทเตียงทั้งหมด (bedtype)
+router.get('/bedtypes', authCheck, async (req, res) => {
+  const cfg = loadSettings();
+  try {
+    const rows = await query(`SELECT bedtype, name FROM bedtype ORDER BY bedtype`, [], cfg);
+    res.json({ success: true, types: rows });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// GET /api/rooms/roomno-options - ตัวเลือกห้อง (roomno) ในวอร์ดที่ยัง active และเป็นห้องพิเศษ
+router.get('/roomno-options', authCheck, async (req, res) => {
+  const cfg = loadSettings();
+  try {
+    const rows = await query(`
+      SELECT r.roomno, r.name, w.name as ward_name
+      FROM roomno r
+      LEFT JOIN ward w ON w.ward = r.ward
+      LEFT JOIN roomtype rt ON rt.roomtype = r.roomtype
+      WHERE w.ward_active = 'Y' AND rt.hos_guid = 'Y'
+      ORDER BY w.name, r.name
+    `, [], cfg);
+    res.json({ success: true, rooms: rows });
+  } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
 });
@@ -314,6 +532,35 @@ router.patch('/his-roomtypes/:code', authCheck, async (req, res) => {
   try {
     await query(
       `UPDATE roomtype SET hos_guid = $1 WHERE roomtype = $2`,
+      [special === 'Y' ? 'Y' : 'N', req.params.code], cfg
+    );
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// GET /api/rooms/bedtype-list - ประเภทเตียง (bedtype) สำหรับหน้าตั้งค่าระบบ
+router.get('/bedtype-list', authCheck, async (req, res) => {
+  const cfg = loadSettings();
+  try {
+    const rows = await query(
+      `SELECT bedtype, name, TRIM(hos_guid) as special FROM bedtype ORDER BY name`,
+      [], cfg
+    );
+    res.json({ success: true, bedtypes: rows });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// PATCH /api/rooms/bedtype-list/:code - toggle hos_guid (เลือก = 'Y' ทันที)
+router.patch('/bedtype-list/:code', authCheck, async (req, res) => {
+  const cfg = loadSettings();
+  const { special } = req.body;
+  try {
+    await query(
+      `UPDATE bedtype SET hos_guid = $1 WHERE bedtype = $2`,
       [special === 'Y' ? 'Y' : 'N', req.params.code], cfg
     );
     res.json({ success: true });

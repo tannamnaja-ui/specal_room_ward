@@ -500,15 +500,16 @@ router.post('/', authCheck, async (req, res) => {
       `INSERT INTO bookings
         (hn, an, patient_name, ward, doctor_name, room_id, room_number, room_type_id,
          check_in_date, check_out_date, rights_type, deposit_amount,
-         contact_name, contact_phone, priority_type, notes, status, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,'reserved',$17)`,
+         contact_name, contact_phone, priority_type, notes, status, created_by, waiting_list_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,'reserved',$17,$18)`,
       [hn, an||null, patient_name, ward||null, doctor_name||null,
        room_id, room_number, room_type_id,
        check_in_date, check_out_date||null,
        rights_type||null, deposit_amount||0,
        contact_name||null, contact_phone||null,
        priority_type||null, notes||null,
-       req.session.user.login_name],
+       req.session.user.login_name,
+       waiting_list_id ? parseInt(waiting_list_id) : null],
       cfg
     );
 
