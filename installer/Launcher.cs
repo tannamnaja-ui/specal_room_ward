@@ -62,9 +62,30 @@ class TrayApp : ApplicationContext
         catch { return false; }
     }
 
+    void KillLeftoverServerProcess()
+    {
+        Process[] procs;
+        try { procs = Process.GetProcessesByName("special_room-server"); }
+        catch { return; }
+
+        if (procs.Length == 0) return;
+
+        foreach (var p in procs)
+        {
+            try { p.Kill(); p.WaitForExit(3000); } catch { }
+            finally { p.Dispose(); }
+        }
+
+        // รอให้พอร์ตว่างจริงก่อนค่อย spawn ตัวใหม่ กันแย่ง bind พอร์ตกันระหว่างที่ OS ยังไม่คืนพอร์ตให้
+        for (int i = 0; i < 10 && IsPortOpen(); i++) Thread.Sleep(300);
+    }
+
     void StartServerIfNeeded()
     {
-        if (IsPortOpen()) return; // มี server รันอยู่แล้ว (เช่นเปิดโปรแกรมซ้ำ) ไม่ต้อง spawn ใหม่
+        // ฆ่าโปรเซสเซิร์ฟเวอร์ที่อาจค้างจากรอบก่อนเสมอ (ไม่ใช่แค่เช็คว่าพอร์ตเปิดอยู่ไหมแล้วข้ามการสตาร์ท)
+        // เพราะโปรเซสที่ค้างอยู่อาจเป็นไฟล์คนละเวอร์ชันกับที่เพิ่งติดตั้ง/อัปเดตมาใหม่ — ถ้าปล่อยให้ IsPortOpen()
+        // ตัดสินใจอย่างเดียว จะเปิดเบราว์เซอร์ไปเจอเซิร์ฟเวอร์รุ่นเก่าที่ยังครองพอร์ตอยู่แทนตัวใหม่ที่เพิ่งติดตั้ง
+        KillLeftoverServerProcess();
 
         if (!File.Exists(serverExe))
         {
