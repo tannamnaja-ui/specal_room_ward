@@ -280,7 +280,16 @@ router.get('/occupants', authCheck, async (req, res) => {
 router.get('/ward-patients', authCheck, async (req, res) => {
   const cfg = loadSettings();
   try {
+    // ipt_doctor_list มีได้หลายแถวต่อ AN (ร่วมรักษา/ที่ปรึกษา/บันทึกซ้ำจริงในข้อมูล) ทำให้ผู้ป่วย 1 คน
+    // ขึ้นซ้ำหลายแถวถ้า join ตรง ๆ — ใช้ DISTINCT ON เลือกแค่ "แพทย์เจ้าของคนไข้" (ipt_doctor_type_id=1)
+    // ที่ active เท่านั้น 1 คนต่อ AN (เรียงตาม incharge_date ล่าสุด แล้ว id ล่าสุด กันกรณีข้อมูลซ้ำเป๊ะ)
     const rows = await query(`
+      WITH primary_doctor AS (
+        SELECT DISTINCT ON (an) an, doctor
+        FROM ipt_doctor_list
+        WHERE active_doctor = 'Y' AND ipt_doctor_type_id = 1
+        ORDER BY an, incharge_date DESC NULLS LAST, ipt_doctor_list_id DESC
+      )
       SELECT w.name as ward, i.hn, i.an, i.regdate,
              concat(p.pname, p.fname, '  ', p.lname) as ptname,
              b.bedno,
@@ -295,8 +304,8 @@ router.get('/ward-patients', authCheck, async (req, res) => {
       LEFT OUTER JOIN patient p ON p.hn = i.hn
       LEFT OUTER JOIN iptadm ia ON ia.an = i.an
       LEFT OUTER JOIN bedno b ON b.bedno = ia.bedno
-      LEFT OUTER JOIN ipt_doctor_list idl ON idl.an = i.an AND idl.active_doctor = 'Y'
-      LEFT OUTER JOIN doctor dd ON dd.code = idl.doctor
+      LEFT OUTER JOIN primary_doctor pd ON pd.an = i.an
+      LEFT OUTER JOIN doctor dd ON dd.code = pd.doctor
       WHERE i.dchdate IS NULL
         AND w.ward_active = 'Y'
       GROUP BY w.name, i.hn, i.an, i.regdate, p.pname, p.fname, p.lname, b.bedno, dd.name
@@ -666,6 +675,7 @@ router.get('/allqueue', authCheck, async (req, res) => {
                COALESCE(w.roomtype_name_2, rt2.type_name) AS type_name_2,
                COALESCE(w.roomtype_name_3, rt3.type_name) AS type_name_3,
                wd.name AS ipt_ward_name,
+               w.created_by, COALESCE(off.officer_name, w.created_by) AS created_by_name,
                (SELECT ${rrDateExpr} FROM roomtype_reserve rr
                 WHERE rr.hn = w.hn AND (w.an IS NULL OR w.an = '' OR rr.an = w.an)
                 ORDER BY rr.roomtype_reserve_id DESC LIMIT 1) AS rr_est_adm_date
@@ -675,6 +685,7 @@ router.get('/allqueue', authCheck, async (req, res) => {
         LEFT JOIN room_types rt3 ON rt3.id = w.room_type_id_3
         LEFT JOIN ipt i ON i.an = w.an AND i.dchdate IS NULL
         LEFT JOIN ward wd ON wd.ward = i.ward
+        LEFT JOIN officer off ON off.officer_login_name = w.created_by
         WHERE w.status = 'waiting'
         ORDER BY w.request_date ASC
       `, [], cfg),
@@ -684,6 +695,7 @@ router.get('/allqueue', authCheck, async (req, res) => {
                b.check_in_date, b.check_out_date, b.notes, b.priority_type,
                rt.type_name,
                wd.name AS ipt_ward_name,
+               b.created_by, COALESCE(off.officer_name, b.created_by) AS created_by_name,
                (SELECT ${rrDateExpr} FROM roomtype_reserve rr
                 WHERE rr.hn = b.hn AND (b.an IS NULL OR b.an = '' OR rr.an = b.an)
                 ORDER BY rr.roomtype_reserve_id DESC LIMIT 1) AS rr_est_adm_date
@@ -691,6 +703,7 @@ router.get('/allqueue', authCheck, async (req, res) => {
         LEFT JOIN room_types rt ON rt.id = b.room_type_id
         LEFT JOIN ipt i ON i.an = b.an AND i.dchdate IS NULL
         LEFT JOIN ward wd ON wd.ward = i.ward
+        LEFT JOIN officer off ON off.officer_login_name = b.created_by
         WHERE b.status = 'reserved'
         ORDER BY b.check_in_date ASC
       `, [], cfg)

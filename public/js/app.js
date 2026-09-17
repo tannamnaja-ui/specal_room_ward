@@ -1509,6 +1509,7 @@ async function loadAllQueue() {
       check_in_date: w.check_in_date,
       rr_est_adm_date: w.rr_est_adm_date,
       notes: w.notes,
+      created_by_name: w.created_by_name,
       status: 'waiting', priority_type: w.priority_type
     }));
 
@@ -1525,6 +1526,7 @@ async function loadAllQueue() {
       check_in_date: b.check_in_date,
       rr_est_adm_date: b.rr_est_adm_date,
       notes: b.notes,
+      created_by_name: b.created_by_name,
       status: 'reserved', priority_type: b.priority_type || '-'
     }));
 
@@ -1612,7 +1614,7 @@ function renderAllQueue(list) {
         <tr style="background:#F5F7FA;color:#546E7A;font-size:12px;font-weight:700">
           ${th('#')}${th('HN')}${th('ชื่อ-สกุล')}${th('Ward ปัจจุบัน')}${th('ห้อง')}
           ${th('ประเภทห้อง')}${th('สิทธิการรักษา')}${th('วันที่เข้าพัก')}${th('หมายเหตุ')}
-          ${th('วันที่จอง')}<th style="padding:10px 12px;text-align:center;border-bottom:1px solid #E0E0E0">สถานะ</th>
+          ${th('วันที่จอง')}${th('ผู้จอง')}<th style="padding:10px 12px;text-align:center;border-bottom:1px solid #E0E0E0">สถานะ</th>
         </tr>
       </thead>
       <tbody>
@@ -1634,6 +1636,7 @@ function renderAllQueue(list) {
             <td style="padding:10px 12px;font-size:12px;white-space:nowrap">${fmtDate(item.check_in_date || item.rr_est_adm_date)}</td>
             <td style="padding:10px 12px;font-size:12px;max-width:160px;white-space:normal;color:${item.notes ? '#C62828' : '#546E7A'}">${escHtml(item.notes||'-')}</td>
             <td style="padding:10px 12px;font-size:12px;color:#546E7A;white-space:nowrap">${item.date ? item.date.replace('T',' ').slice(0,16) : '-'}</td>
+            <td style="padding:10px 12px;font-size:12px;white-space:nowrap">${escHtml(item.created_by_name||'-')}</td>
             <td style="padding:10px 12px;text-align:center">${statusChip[item.status]||item.status}</td>
           </tr>`;
         }).join('')}
