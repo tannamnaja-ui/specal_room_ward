@@ -376,4 +376,55 @@ router.get('/shift-revenue', authCheck, async (req, res) => {
   }
 });
 
+// 10) สรุปข้อมูลรวมตามเตียง — ทุกคอลัมน์มาจากรายการเรียกเก็บจริงใน opitemrece ล้วน ๆ (เฉพาะคืนที่มีรายการบิลจริงแล้วเท่านั้น
+// ทั้งจำนวนคืนและราคา — คืนที่ยังไม่ถึงรอบออกบิลจะไม่ถูกนับเลยไม่ว่าคอลัมน์ไหน):
+// "จำนวนคืนที่นอน" = SUM(qty) ของรายการค่าห้อง (1 รายการอาจครอบคลุมหลายคืนถ้าออกบิลเป็นรอบ ไม่ใช่ราย 1 คืนเสมอไป)
+// "ราคาเต็ม" = ผลรวมทุกรายการที่ถูกออกบิลแล้ว (paidst 00/01/02/03/04 ทั้งหมด รวมที่ยังค้างชำระด้วย)
+// claimable/payable/discount คือยอดย่อยของราคาเต็ม แยกตามสถานะจ่ายเงิน (paidst) จึงรวมกันแล้วอาจไม่เท่าราคาเต็มถ้ายังมีค้างชำระ (paidst=00) เหลืออยู่
+router.get('/bed-full-summary', authCheck, async (req, res) => {
+  const cfg = loadSettings();
+  try {
+    const { from, to, ward } = req.query;
+    const params = [];
+    const where = dateRangeClause('vstdate', from, to, params) + wardClause('ward_code', ward, params);
+    const rows = await query(`
+      WITH special_beds AS (
+        SELECT bn.bedno, bn.room_charge_icode, bn.roomno, nd.price as rate_per_night
+        FROM bedno bn
+        JOIN bedtype bt ON bt.bedtype = bn.bedtype
+        LEFT JOIN nondrugitems nd ON nd.icode = bn.room_charge_icode
+        WHERE bt.hos_guid = 'Y' AND bn.room_charge_icode IS NOT NULL
+      ),
+      an_bed AS (
+        SELECT DISTINCT ON (i.an) i.an, i.nbedno as bedno
+        FROM iptbedmove i
+        JOIN special_beds sb ON sb.bedno = i.nbedno
+        ORDER BY i.an, (i.movedate + i.movetime) DESC
+      ),
+      paid_charges AS (
+        SELECT ab.bedno, rn.name as room_name, sb.rate_per_night, w.ward as ward_code, o.sum_price, o.qty, o.vstdate, o.paidst
+        FROM opitemrece o
+        JOIN an_bed ab ON ab.an = o.an
+        JOIN special_beds sb ON sb.bedno = ab.bedno AND sb.room_charge_icode = o.icode
+        LEFT JOIN roomno rn ON rn.roomno = sb.roomno
+        LEFT JOIN ward w ON w.ward = rn.ward
+        WHERE o.paidst IN ('00','01','02','03','04')
+      )
+      SELECT bedno as room_number, MAX(room_name) as room_name, MAX(rate_per_night) as rate_per_night,
+             SUM(qty) as nights,
+             SUM(sum_price) as full_price,
+             SUM(sum_price) FILTER (WHERE paidst = '02') as claimable_revenue,
+             SUM(sum_price) FILTER (WHERE paidst IN ('01','03')) as payable_revenue,
+             SUM(sum_price) FILTER (WHERE paidst = '04') as discount_revenue
+      FROM paid_charges
+      WHERE 1=1 ${where}
+      GROUP BY bedno
+      ORDER BY room_number
+    `, params, cfg);
+    res.json({ success: true, rows });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 module.exports = router;
