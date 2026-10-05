@@ -111,6 +111,7 @@ const tabTitles = {
   current:      '🛏️ ผู้พักและการจองปัจจุบัน',
   allrooms:     '🏨 ชื่อผู้จองและรอคิวทั้งหมด (รอจัดการ)',
   reports:      '📊 สรุปรายงานการใช้ห้อง',
+  financedash:  '📈 แดชบอร์ดกราฟรายได้ห้องพิเศษรายเดือน',
   settings:     '⚙️ ตั้งค่าระบบ'
 };
 
@@ -128,6 +129,7 @@ function switchTab(tab) {
   if (tab === 'mywardbookings') loadMyWardBookings();
   if (tab === 'managerooms') loadManageRooms();
   if (tab === 'reports') { renderReportCards(); showReportsHub(); }
+  if (tab === 'financedash') loadFinanceDashboard();
 }
 
 /* ===== TOAST ===== */
@@ -752,7 +754,11 @@ function setDefaultDateTime() {
   const now = new Date();
   const pad = n => String(n).padStart(2,'0');
   const fmt = (d) => `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
-  document.getElementById('bnCheckIn').value = fmt(now);
+  const checkInEl = document.getElementById('bnCheckIn');
+  checkInEl.value = fmt(now);
+  // เลือกวันที่เข้าพักได้ไม่เกิน 7 วันหลังวันปัจจุบัน
+  const maxDate = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+  checkInEl.max = fmt(maxDate);
 }
 
 /* ===== วันที่จองห้อง (auto = วันเวลาปัจจุบัน) ===== */
@@ -816,6 +822,15 @@ function checkPriceRankClick(rank) {
   toast(rank === 2 ? 'กรุณาเลือกลำดับที่ 1 ก่อน' : 'กรุณาเลือกลำดับที่ 1 และ 2 ก่อน', 'warning');
 }
 
+// เลือกวันที่เข้าพักได้ไม่เกิน 7 วันหลังวันปัจจุบัน (ให้ตรงกับ max ที่ตั้งไว้บน input กันกรณีเบราว์เซอร์ไม่บังคับ)
+function isCheckInWithin7Days(checkInStr) {
+  if (!checkInStr) return true;
+  const checkInDate = new Date(checkInStr);
+  if (isNaN(checkInDate)) return true;
+  const maxDate = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+  return checkInDate <= maxDate;
+}
+
 /* ===== SUBMIT BOOKING ===== */
 async function submitBooking() {
   const hn         = document.getElementById('bnHn').value.trim();
@@ -839,6 +854,7 @@ async function submitBooking() {
   if (!contactName)  return toast('กรุณากรอกชื่อผู้ติดต่อ', 'warning');
   if (!contactPhone) return toast('กรุณากรอกเบอร์โทรผู้ติดต่อ', 'warning');
   if (!checkIn)      return toast('กรุณาระบุวันที่เข้าพัก', 'warning');
+  if (!isCheckInWithin7Days(checkIn)) return toast('เลือกวันที่เข้าพักได้ไม่เกิน 7 วันหลังวันปัจจุบัน', 'warning');
 
   const selectedOpt = document.getElementById('bnRoomId').options[document.getElementById('bnRoomId').selectedIndex];
   const roomId     = selectedOpt?.dataset.roomId || null;
@@ -910,6 +926,7 @@ async function addToWaitlist() {
 
   if (!hn) return toast('กรุณากรอก HN', 'warning');
   if (!patientName) return toast('กรุณาค้นหาข้อมูลผู้ป่วยก่อน', 'warning');
+  if (!isCheckInWithin7Days(checkIn)) return toast('เลือกวันที่เข้าพักได้ไม่เกิน 7 วันหลังวันปัจจุบัน', 'warning');
 
   showLoading(true);
   try {
@@ -2878,6 +2895,277 @@ function renderShiftRevenueReport(data) {
       </tr></tfoot>
     </table>
     </div>`;
+}
+
+/* ===== แดชบอร์ดกราฟรายได้ห้องพิเศษรายเดือน ===== */
+let financeDashWardsLoaded = false;
+let financeDashChartInstance = null;
+let financeDashLineChartInstance = null;
+let financeDashLastData = null;
+
+async function loadFinanceDashWards() {
+  if (financeDashWardsLoaded) return;
+  const sel = document.getElementById('financeDashWardFilter');
+  if (!sel) return;
+  try {
+    const res  = await fetchWithTimeout('/api/bookings/his-wards');
+    const data = await res.json();
+    if (!data.success) return;
+    (data.wards || []).filter(w => w.ward && w.name).forEach(w => {
+      const opt = document.createElement('option');
+      opt.value = w.ward; opt.textContent = w.name;
+      sel.appendChild(opt);
+    });
+    financeDashWardsLoaded = true;
+  } catch (e) {}
+}
+
+// "2026-09" -> "ก.ย. 2569" (เดือนย่อภาษาไทย + ปี พ.ศ.)
+function formatMonthLabel(monthStr) {
+  const d = new Date(monthStr + '-01T00:00:00');
+  if (isNaN(d)) return monthStr;
+  return d.toLocaleDateString('th-TH', { month: 'short', year: 'numeric' });
+}
+
+async function loadFinanceDashboard() {
+  await loadFinanceDashWards();
+  const chartWrap     = document.getElementById('financeDashChartWrap');
+  const lineChartWrap = document.getElementById('financeDashLineChartWrap');
+  const emptyEl   = document.getElementById('financeDashEmpty');
+  const cardsEl   = document.getElementById('financeDashCards');
+  const tableEl   = document.getElementById('financeDashTableWrap');
+  cardsEl.innerHTML = '';
+  tableEl.innerHTML = `<div class="empty-state"><div class="spinner" style="margin:0 auto"></div><p style="margin-top:12px">กำลังโหลด...</p></div>`;
+  try {
+    const ward = document.getElementById('financeDashWardFilter').value;
+    const qs = ward ? `?ward=${encodeURIComponent(ward)}` : '';
+    const res  = await fetchWithTimeout('/api/reports/monthly-financial-summary' + qs);
+    const data = await res.json();
+    if (!data.success) { tableEl.innerHTML = `<div class="alert alert-error">❌ ${data.message}</div>`; return; }
+    financeDashLastData = data.rows || [];
+    if (financeDashLastData.length === 0) {
+      chartWrap.style.display = 'none';
+      if (lineChartWrap) lineChartWrap.style.display = 'none';
+      emptyEl.style.display = '';
+      tableEl.innerHTML = '';
+      cardsEl.innerHTML = '';
+      return;
+    }
+    chartWrap.style.display = '';
+    if (lineChartWrap) lineChartWrap.style.display = '';
+    emptyEl.style.display = 'none';
+    renderFinanceDashCards(financeDashLastData);
+    renderFinanceDashChart(financeDashLastData);
+    renderFinanceDashLineChart(financeDashLastData);
+    renderFinanceDashTable(financeDashLastData);
+  } catch (e) {
+    tableEl.innerHTML = `<div class="alert alert-error">❌ ไม่สามารถโหลดข้อมูลได้</div>`;
+  }
+}
+
+function renderFinanceDashCards(rows) {
+  const cardsEl = document.getElementById('financeDashCards');
+  let totalFull = 0, totalClaimable = 0, totalPayable = 0, totalDiscount = 0;
+  rows.forEach(r => {
+    totalFull      += (+r.full_price || 0);
+    totalClaimable += (+r.claimable_revenue || 0);
+    totalPayable   += (+r.payable_revenue || 0);
+    totalDiscount  += (+r.discount_revenue || 0);
+  });
+  const card = (icon, label, value, color) => `
+    <div class="stat-card" style="border-left-color:${color}">
+      <div class="stat-icon">${icon}</div>
+      <div><div class="stat-number" style="color:${color};font-size:19px">${fmtBaht(value)}</div><div class="stat-label">${label}</div></div>
+    </div>`;
+  cardsEl.innerHTML = `
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:4px">
+      ${card('🏷️', 'ราคาเต็มxจำนวนคืน (รวม)', totalFull, '#78909C')}
+      ${card('🪪', 'ราคาเบิกได้ (รวม)', totalClaimable, '#1565C0')}
+      ${card('💰', 'ราคาที่ต้องชำระเงิน (รวม)', totalPayable, '#2E7D32')}
+      ${card('🏷️', 'ราคาส่วนลด (รวม)', totalDiscount, '#C62828')}
+    </div>`;
+}
+
+function renderFinanceDashChart(rows) {
+  const canvas = document.getElementById('financeDashChart');
+  if (!canvas) return;
+  if (typeof Chart === 'undefined') {
+    canvas.parentElement.innerHTML = `<div class="empty-state"><div class="empty-icon">⚠️</div><p>โหลดไลบรารีกราฟไม่สำเร็จ (chart.umd.min.js)</p></div>`;
+    return;
+  }
+  if (financeDashChartInstance) { financeDashChartInstance.destroy(); financeDashChartInstance = null; }
+
+  const labels = rows.map(r => formatMonthLabel(r.month));
+  const dataset = (key) => rows.map(r => +r[key] || 0);
+
+  financeDashChartInstance = new Chart(canvas.getContext('2d'), {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        { label: 'ราคาเต็มxจำนวนคืน', data: dataset('full_price'),       backgroundColor: '#B0BEC5', borderRadius: 4, order: 4 },
+        { label: 'ราคาเบิกได้',       data: dataset('claimable_revenue'), backgroundColor: '#42A5F5', borderRadius: 4, order: 3 },
+        { label: 'ราคาที่ต้องชำระเงิน', data: dataset('payable_revenue'),  backgroundColor: '#66BB6A', borderRadius: 4, order: 2 },
+        { label: 'ราคาส่วนลด',        data: dataset('discount_revenue'),  backgroundColor: '#EF5350', borderRadius: 4, order: 1 }
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { position: 'top', labels: { font: { family: 'Sarabun', size: 13 }, usePointStyle: true, pointStyle: 'circle' } },
+        tooltip: {
+          titleFont: { family: 'Sarabun' }, bodyFont: { family: 'Sarabun' },
+          callbacks: { label: (ctx) => `${ctx.dataset.label}: ${(+ctx.raw).toLocaleString('th-TH')} บาท` }
+        }
+      },
+      scales: {
+        x: { ticks: { font: { family: 'Sarabun', size: 12 } }, grid: { display: false } },
+        y: {
+          ticks: {
+            font: { family: 'Sarabun', size: 12 },
+            callback: (v) => (+v).toLocaleString('th-TH')
+          },
+          grid: { color: '#F0F4F8' }
+        }
+      }
+    }
+  });
+}
+
+// กราฟเส้นแนวโน้ม — ข้อมูลชุดเดียวกับกราฟแท่งด้านบนทุกอย่าง (ราคาเต็มxจำนวนคืน/เบิกได้/ต้องชำระ/ส่วนลด) เพียงแค่เปลี่ยนมุมมองเป็น "แนวโน้มตามเวลา" แทน "เทียบยอดรายเดือนแบบแท่ง"
+function renderFinanceDashLineChart(rows) {
+  const canvas = document.getElementById('financeDashLineChart');
+  if (!canvas) return;
+  if (typeof Chart === 'undefined') {
+    canvas.parentElement.innerHTML = `<div class="empty-state"><div class="empty-icon">⚠️</div><p>โหลดไลบรารีกราฟไม่สำเร็จ (chart.umd.min.js)</p></div>`;
+    return;
+  }
+  if (financeDashLineChartInstance) { financeDashLineChartInstance.destroy(); financeDashLineChartInstance = null; }
+
+  const labels = rows.map(r => formatMonthLabel(r.month));
+  const dataset = (key) => rows.map(r => +r[key] || 0);
+  const line = (label, key, color) => ({
+    label, data: dataset(key),
+    borderColor: color, backgroundColor: color,
+    tension: 0.3, borderWidth: 2.5,
+    pointRadius: 4, pointHoverRadius: 6, pointBackgroundColor: '#fff', pointBorderWidth: 2
+  });
+
+  financeDashLineChartInstance = new Chart(canvas.getContext('2d'), {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        line('ราคาเต็มxจำนวนคืน', 'full_price', '#78909C'),
+        line('ราคาเบิกได้', 'claimable_revenue', '#1E88E5'),
+        line('ราคาที่ต้องชำระเงิน', 'payable_revenue', '#2E7D32'),
+        line('ราคาส่วนลด', 'discount_revenue', '#E53935')
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { position: 'top', labels: { font: { family: 'Sarabun', size: 13 }, usePointStyle: true, pointStyle: 'circle' } },
+        tooltip: {
+          titleFont: { family: 'Sarabun' }, bodyFont: { family: 'Sarabun' },
+          callbacks: { label: (ctx) => `${ctx.dataset.label}: ${(+ctx.raw).toLocaleString('th-TH')} บาท` }
+        }
+      },
+      scales: {
+        x: { ticks: { font: { family: 'Sarabun', size: 12 } }, grid: { display: false } },
+        y: {
+          ticks: {
+            font: { family: 'Sarabun', size: 12 },
+            callback: (v) => (+v).toLocaleString('th-TH')
+          },
+          grid: { color: '#F0F4F8' }
+        }
+      }
+    }
+  });
+}
+
+function renderFinanceDashTable(rows) {
+  const tableEl = document.getElementById('financeDashTableWrap');
+  let totalFull = 0, totalClaimable = 0, totalPayable = 0, totalDiscount = 0;
+  const bodyRows = rows.map((r, i) => {
+    totalFull      += (+r.full_price || 0);
+    totalClaimable += (+r.claimable_revenue || 0);
+    totalPayable   += (+r.payable_revenue || 0);
+    totalDiscount  += (+r.discount_revenue || 0);
+    return `<tr style="background:${i%2===0?'#fff':'#FAFAFA'};border-bottom:1px solid #F0F0F0">
+      <td style="padding:8px 10px;font-weight:600">${escHtml(formatMonthLabel(r.month))}</td>
+      <td style="padding:8px 10px;text-align:right">${fmtBaht(r.full_price)}</td>
+      <td style="padding:8px 10px;text-align:right">${fmtBaht(r.claimable_revenue)}</td>
+      <td style="padding:8px 10px;text-align:right;font-weight:700;color:#2E7D32">${fmtBaht(r.payable_revenue)}</td>
+      <td style="padding:8px 10px;text-align:right;color:#C62828">${fmtBaht(r.discount_revenue)}</td>
+    </tr>`;
+  }).join('');
+  tableEl.innerHTML = `
+    <table style="width:100%;border-collapse:collapse;font-size:13px">
+      <thead><tr style="background:#F5F7FA;color:#546E7A;font-size:12px;font-weight:700">
+        ${reportTh('เดือน')}<th style="padding:10px 12px;text-align:right;border-bottom:1px solid #E0E0E0">ราคาเต็มxจำนวนคืน</th><th style="padding:10px 12px;text-align:right;border-bottom:1px solid #E0E0E0">ราคาเบิกได้</th><th style="padding:10px 12px;text-align:right;border-bottom:1px solid #E0E0E0">ราคาที่ต้องชำระเงิน</th><th style="padding:10px 12px;text-align:right;border-bottom:1px solid #E0E0E0">ราคาส่วนลด</th>
+      </tr></thead>
+      <tbody>${bodyRows}</tbody>
+      <tfoot><tr style="background:#F5F7FA;font-weight:700">
+        <td style="padding:8px 10px">รวมทั้งหมด</td>
+        <td style="padding:8px 10px;text-align:right">${fmtBaht(totalFull)}</td>
+        <td style="padding:8px 10px;text-align:right">${fmtBaht(totalClaimable)}</td>
+        <td style="padding:8px 10px;text-align:right;color:#2E7D32">${fmtBaht(totalPayable)}</td>
+        <td style="padding:8px 10px;text-align:right;color:#C62828">${fmtBaht(totalDiscount)}</td>
+      </tr></tfoot>
+    </table>`;
+}
+
+function printFinanceDashboard() {
+  if (!financeDashLastData || financeDashLastData.length === 0) { toast('ไม่มีข้อมูลสำหรับพิมพ์', 'warning'); return; }
+  const chartImg     = financeDashChartInstance ? financeDashChartInstance.toBase64Image() : '';
+  const lineChartImg = financeDashLineChartInstance ? financeDashLineChartInstance.toBase64Image() : '';
+  const wardSel  = document.getElementById('financeDashWardFilter');
+  const wardText = wardSel && wardSel.value ? wardSel.options[wardSel.selectedIndex].textContent : 'ทุก Ward';
+  const printedAt = new Date().toLocaleString('th-TH', { dateStyle: 'long', timeStyle: 'short' });
+  const cardsHtml = document.getElementById('financeDashCards').innerHTML;
+  const tableHtml = document.getElementById('financeDashTableWrap').innerHTML;
+
+  const html = `<!DOCTYPE html><html lang="th"><head>
+  <meta charset="UTF-8">
+  <title>แดชบอร์ดกราฟรายได้ห้องพิเศษรายเดือน</title>
+  <style>
+    @page { size: A4 portrait; margin: 15mm 12mm; }
+    * { box-sizing: border-box; }
+    body { font-family: 'Angsana New', 'AngsanaUPC', serif; font-size: 16px; color: #222; margin: 0; }
+    .report-title { font-size: 22px; font-weight: 700; text-align: center; margin-bottom: 4px; }
+    .meta-right   { text-align: right; font-size: 14px; color: #777; margin-bottom: 10px; }
+    .filter-bar   { font-size: 15px; color: #444; margin-bottom: 12px; border-bottom: 1px solid #ccc; padding-bottom: 8px; }
+    table { width: 100%; border-collapse: collapse; font-size: 16px; margin-top: 10px; }
+    th { padding: 6px 8px; text-align: left; font-weight: 700; border: 1px solid #000; }
+    td { padding: 5px 8px; border: 1px solid #000; vertical-align: top; }
+    .stat-card { display: inline-flex; align-items: center; gap: 10px; border: 1px solid #000; border-radius: 4px; padding: 10px 16px; margin: 0 10px 10px 0; }
+    .stat-icon { font-size: 20px; }
+    .stat-number { font-size: 16px; font-weight: 700; }
+    .stat-label { font-size: 12px; }
+    table, thead, tbody, tfoot, tr, th, td { background: #fff !important; }
+    img.chart-img { width: 100%; max-width: 100%; margin: 14px 0; }
+  </style>
+  </head><body>
+  <div class="report-title">📈 แดชบอร์ดกราฟรายได้ห้องพิเศษรายเดือน</div>
+  <div class="meta-right">พิมพ์เมื่อ: ${printedAt}</div>
+  <div class="filter-bar">Ward: <b>${escHtml(wardText)}</b></div>
+  <div style="display:flex;flex-wrap:wrap">${cardsHtml}</div>
+  ${chartImg ? `<img class="chart-img" src="${chartImg}">` : ''}
+  ${lineChartImg ? `<img class="chart-img" src="${lineChartImg}">` : ''}
+  ${tableHtml}
+  </body></html>`;
+
+  const w = window.open('', '_blank', 'width=1100,height=750');
+  w.document.write(html);
+  w.document.close();
+  w.focus();
+  setTimeout(() => { w.print(); }, 400);
 }
 
 // สรุปข้อมูลรวมตามเตียง — ชื่อเตียง, จำนวนคืนที่นอน, ราคาเต็ม, ราคาเบิกได้, ราคาที่ต้องชำระเงิน, ราคาส่วนลด พร้อมรวมยอดทุกคอลัมน์ด้านล่าง

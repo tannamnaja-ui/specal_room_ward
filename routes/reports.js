@@ -380,7 +380,10 @@ router.get('/shift-revenue', authCheck, async (req, res) => {
 // ทั้งจำนวนคืนและราคา — คืนที่ยังไม่ถึงรอบออกบิลจะไม่ถูกนับเลยไม่ว่าคอลัมน์ไหน):
 // "จำนวนคืนที่นอน" = SUM(qty) ของรายการค่าห้อง (1 รายการอาจครอบคลุมหลายคืนถ้าออกบิลเป็นรอบ ไม่ใช่ราย 1 คืนเสมอไป)
 // "ราคาเต็ม" = ผลรวมทุกรายการที่ถูกออกบิลแล้ว (paidst 00/01/02/03/04 ทั้งหมด รวมที่ยังค้างชำระด้วย)
-// claimable/payable/discount คือยอดย่อยของราคาเต็ม แยกตามสถานะจ่ายเงิน (paidst) จึงรวมกันแล้วอาจไม่เท่าราคาเต็มถ้ายังมีค้างชำระ (paidst=00) เหลืออยู่
+// "ราคาส่วนลด" รวมจาก 2 แหล่ง แล้วหักออกจาก "ราคาที่ต้องชำระเงิน" (เฉพาะรายการ paidst 01/03 ที่เป็นยอดต้องชำระ):
+//   1) opitemrece.discount — จำนวนเงินส่วนลดที่บันทึกไว้ในรายการเรียกเก็บโดยตรง
+//   2) pttype_items_price_inc.discount_percent x inc_cover_price / 100 — ส่วนลด % ตามนโยบายราคาเรียกเก็บของสิทธิ (ยังไม่พบข้อมูลสำหรับ icode ห้องพิเศษที่มีอยู่ตอนนี้ แต่ใส่ไว้รองรับ)
+// ใช้ scalar subquery (ไม่ใช่ join ตรง) กับแหล่งที่ 2 เพราะ 1 icode อาจมีได้หลาย policy row ต่อ pttype ต่างกัน ป้องกันไม่ให้ยอดถูกคูณซ้ำ (fan-out)
 router.get('/bed-full-summary', authCheck, async (req, res) => {
   const cfg = loadSettings();
   try {
@@ -402,7 +405,14 @@ router.get('/bed-full-summary', authCheck, async (req, res) => {
         ORDER BY i.an, (i.movedate + i.movetime) DESC
       ),
       paid_charges AS (
-        SELECT ab.bedno, rn.name as room_name, sb.rate_per_night, w.ward as ward_code, o.sum_price, o.qty, o.vstdate, o.paidst
+        SELECT ab.bedno, rn.name as room_name, sb.rate_per_night, w.ward as ward_code,
+               o.sum_price, o.qty, o.vstdate, o.paidst,
+               COALESCE(o.discount, 0) as row_discount_amount,
+               COALESCE((
+                 SELECT MAX(pipi.inc_cover_price * pipi.discount_percent / 100)
+                 FROM pttype_items_price_inc pipi
+                 WHERE pipi.inc_icode = o.icode AND pipi.discount_percent IS NOT NULL
+               ), 0) as row_discount_pct_amount
         FROM opitemrece o
         JOIN an_bed ab ON ab.an = o.an
         JOIN special_beds sb ON sb.bedno = ab.bedno AND sb.room_charge_icode = o.icode
@@ -414,12 +424,67 @@ router.get('/bed-full-summary', authCheck, async (req, res) => {
              SUM(qty) as nights,
              SUM(sum_price) as full_price,
              SUM(sum_price) FILTER (WHERE paidst = '02') as claimable_revenue,
-             SUM(sum_price) FILTER (WHERE paidst IN ('01','03')) as payable_revenue,
-             SUM(sum_price) FILTER (WHERE paidst = '04') as discount_revenue
+             SUM(sum_price) FILTER (WHERE paidst IN ('01','03'))
+               - SUM(row_discount_amount + row_discount_pct_amount) FILTER (WHERE paidst IN ('01','03')) as payable_revenue,
+             SUM(row_discount_amount + row_discount_pct_amount) FILTER (WHERE paidst IN ('01','03')) as discount_revenue
       FROM paid_charges
       WHERE 1=1 ${where}
       GROUP BY bedno
       ORDER BY room_number
+    `, params, cfg);
+    res.json({ success: true, rows });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// 11) สรุปรวมรายเดือนสำหรับแดชบอร์ดกราฟ — ยอดรวมทั้งหมด (ทุกเตียง) ของ ราคาเต็มxจำนวนคืน/ราคาเบิกได้/ราคาที่ต้องชำระเงิน/ราคาส่วนลด แยกตามเดือน
+// ใช้หลักการคำนวณเดียวกับ "สรุปข้อมูลราคารวมตามเตียง" ทุกอย่าง เพียงแค่ group ตามเดือน (TO_CHAR(vstdate,'YYYY-MM')) แทนตามเตียง
+router.get('/monthly-financial-summary', authCheck, async (req, res) => {
+  const cfg = loadSettings();
+  try {
+    const { ward } = req.query;
+    const params = [];
+    const where = wardClause('ward_code', ward, params);
+    const rows = await query(`
+      WITH special_beds AS (
+        SELECT bn.bedno, bn.room_charge_icode, bn.roomno, nd.price as rate_per_night
+        FROM bedno bn
+        JOIN bedtype bt ON bt.bedtype = bn.bedtype
+        LEFT JOIN nondrugitems nd ON nd.icode = bn.room_charge_icode
+        WHERE bt.hos_guid = 'Y' AND bn.room_charge_icode IS NOT NULL
+      ),
+      an_bed AS (
+        SELECT DISTINCT ON (i.an) i.an, i.nbedno as bedno
+        FROM iptbedmove i
+        JOIN special_beds sb ON sb.bedno = i.nbedno
+        ORDER BY i.an, (i.movedate + i.movetime) DESC
+      ),
+      paid_charges AS (
+        SELECT ab.bedno, w.ward as ward_code, o.sum_price, o.vstdate, o.paidst,
+               COALESCE(o.discount, 0) as row_discount_amount,
+               COALESCE((
+                 SELECT MAX(pipi.inc_cover_price * pipi.discount_percent / 100)
+                 FROM pttype_items_price_inc pipi
+                 WHERE pipi.inc_icode = o.icode AND pipi.discount_percent IS NOT NULL
+               ), 0) as row_discount_pct_amount
+        FROM opitemrece o
+        JOIN an_bed ab ON ab.an = o.an
+        JOIN special_beds sb ON sb.bedno = ab.bedno AND sb.room_charge_icode = o.icode
+        LEFT JOIN roomno rn ON rn.roomno = sb.roomno
+        LEFT JOIN ward w ON w.ward = rn.ward
+        WHERE o.paidst IN ('00','01','02','03','04')
+      )
+      SELECT TO_CHAR(vstdate, 'YYYY-MM') as month,
+             SUM(sum_price) as full_price,
+             SUM(sum_price) FILTER (WHERE paidst = '02') as claimable_revenue,
+             SUM(sum_price) FILTER (WHERE paidst IN ('01','03'))
+               - SUM(row_discount_amount + row_discount_pct_amount) FILTER (WHERE paidst IN ('01','03')) as payable_revenue,
+             SUM(row_discount_amount + row_discount_pct_amount) FILTER (WHERE paidst IN ('01','03')) as discount_revenue
+      FROM paid_charges
+      WHERE 1=1 ${where}
+      GROUP BY TO_CHAR(vstdate, 'YYYY-MM')
+      ORDER BY month
     `, params, cfg);
     res.json({ success: true, rows });
   } catch (err) {

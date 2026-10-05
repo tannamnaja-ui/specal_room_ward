@@ -79,6 +79,10 @@
         <span class="nav-icon">📊</span>
         <span>สรุปรายงานการใช้ห้อง</span>
       </a>
+      <a class="nav-item" id="nav-financedash" onclick="switchTab('financedash')">
+        <span class="nav-icon">📈</span>
+        <span>แดชบอร์ดกราฟรายได้</span>
+      </a>
     </div>
 
     <div class="sidebar-footer">
@@ -281,6 +285,52 @@
             <div id="reportDetailContent" style="padding:20px">
               <div class="empty-state"><div class="spinner" style="margin:0 auto"></div><p style="margin-top:12px">กำลังโหลด...</p></div>
             </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ===== TAB: FINANCE DASHBOARD (กราฟเปรียบเทียบรายเดือน) ===== -->
+      <div class="tab-panel" id="panel-financedash">
+        <div style="background:#fff;border-radius:14px;box-shadow:0 2px 12px rgba(0,0,0,.07);overflow:hidden">
+          <div class="section-header" style="flex-wrap:wrap;gap:10px">
+            <h3>📈 แดชบอร์ดกราฟรายได้ห้องพิเศษรายเดือน</h3>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+              <select id="financeDashWardFilter" class="select-control" style="width:200px;padding:6px 10px;font-size:13px" onchange="loadFinanceDashboard()">
+                <option value="">— ทุก Ward —</option>
+              </select>
+              <button class="btn btn-secondary btn-sm" onclick="loadFinanceDashboard()">🔄 รีเฟรช</button>
+              <button class="btn btn-sm" onclick="printFinanceDashboard()" style="background:#1565C0;color:#fff;padding:6px 14px;font-size:13px">🖨️ พิมพ์</button>
+            </div>
+          </div>
+
+          <!-- การ์ดสรุปยอดรวมทั้งหมด -->
+          <div id="financeDashCards" style="padding:20px 20px 0"></div>
+
+          <!-- กราฟเปรียบเทียบรายเดือน (แท่ง) -->
+          <div style="padding:20px 20px 0">
+            <div style="background:#FAFBFC;border:1px solid #F0F4F8;border-radius:12px;padding:20px">
+              <div style="font-size:13px;font-weight:700;color:#546E7A;margin-bottom:8px">เปรียบเทียบยอดแต่ละประเภทรายเดือน (กราฟแท่ง)</div>
+              <div id="financeDashChartWrap" style="position:relative;height:400px">
+                <canvas id="financeDashChart"></canvas>
+              </div>
+              <div id="financeDashEmpty" class="empty-state" style="display:none"><div class="empty-icon">📈</div><p>ไม่พบข้อมูล</p></div>
+            </div>
+          </div>
+
+          <!-- กราฟแนวโน้มรายเดือน (เส้น) -->
+          <div style="padding:20px">
+            <div style="background:#FAFBFC;border:1px solid #F0F4F8;border-radius:12px;padding:20px">
+              <div style="font-size:13px;font-weight:700;color:#546E7A;margin-bottom:8px">แนวโน้มแต่ละประเภทรายเดือน (กราฟเส้น)</div>
+              <div id="financeDashLineChartWrap" style="position:relative;height:380px">
+                <canvas id="financeDashLineChart"></canvas>
+              </div>
+            </div>
+          </div>
+
+          <!-- ตารางข้อมูลรายเดือน (ตัวเลขละเอียด) -->
+          <div style="padding:0 20px 20px">
+            <div style="font-size:13px;font-weight:700;color:#546E7A;margin-bottom:8px">ตัวเลขรายเดือน</div>
+            <div id="financeDashTableWrap" style="overflow-x:auto"></div>
           </div>
         </div>
       </div>
@@ -1053,6 +1103,7 @@
 </div>
 
 <script src="/socket.io/socket.io.js"></script>
+<script src="/js/vendor/chart.umd.min.js"></script>
 <script src="/js/app.js"></script>
 </body>
 </html>
