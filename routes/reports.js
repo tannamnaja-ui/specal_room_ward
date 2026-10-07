@@ -384,6 +384,7 @@ router.get('/shift-revenue', authCheck, async (req, res) => {
 //   1) opitemrece.discount — จำนวนเงินส่วนลดที่บันทึกไว้ในรายการเรียกเก็บโดยตรง
 //   2) pttype_items_price_inc.discount_percent x inc_cover_price / 100 — ส่วนลด % ตามนโยบายราคาเรียกเก็บของสิทธิ (ยังไม่พบข้อมูลสำหรับ icode ห้องพิเศษที่มีอยู่ตอนนี้ แต่ใส่ไว้รองรับ)
 // ใช้ scalar subquery (ไม่ใช่ join ตรง) กับแหล่งที่ 2 เพราะ 1 icode อาจมีได้หลาย policy row ต่อ pttype ต่างกัน ป้องกันไม่ให้ยอดถูกคูณซ้ำ (fan-out)
+// "รายรับ Net" = ราคาเบิกได้ + ราคาที่ต้องชำระเงิน (ไม่ลบส่วนลดซ้ำอีกรอบ เพราะ "ราคาที่ต้องชำระเงิน" ข้างบนหักส่วนลดออกไปแล้ว)
 router.get('/bed-full-summary', authCheck, async (req, res) => {
   const cfg = loadSettings();
   try {
@@ -420,16 +421,19 @@ router.get('/bed-full-summary', authCheck, async (req, res) => {
         LEFT JOIN ward w ON w.ward = rn.ward
         WHERE o.paidst IN ('00','01','02','03','04')
       )
-      SELECT bedno as room_number, MAX(room_name) as room_name, MAX(rate_per_night) as rate_per_night,
-             SUM(qty) as nights,
-             SUM(sum_price) as full_price,
-             SUM(sum_price) FILTER (WHERE paidst = '02') as claimable_revenue,
-             SUM(sum_price) FILTER (WHERE paidst IN ('01','03'))
-               - SUM(row_discount_amount + row_discount_pct_amount) FILTER (WHERE paidst IN ('01','03')) as payable_revenue,
-             SUM(row_discount_amount + row_discount_pct_amount) FILTER (WHERE paidst IN ('01','03')) as discount_revenue
-      FROM paid_charges
-      WHERE 1=1 ${where}
-      GROUP BY bedno
+      SELECT *, COALESCE(claimable_revenue,0) + COALESCE(payable_revenue,0) as net_revenue
+      FROM (
+        SELECT bedno as room_number, MAX(room_name) as room_name, MAX(rate_per_night) as rate_per_night,
+               SUM(qty) as nights,
+               SUM(sum_price) as full_price,
+               SUM(sum_price) FILTER (WHERE paidst = '02') as claimable_revenue,
+               SUM(sum_price) FILTER (WHERE paidst IN ('01','03'))
+                 - SUM(row_discount_amount + row_discount_pct_amount) FILTER (WHERE paidst IN ('01','03')) as payable_revenue,
+               SUM(row_discount_amount + row_discount_pct_amount) FILTER (WHERE paidst IN ('01','03')) as discount_revenue
+        FROM paid_charges
+        WHERE 1=1 ${where}
+        GROUP BY bedno
+      ) agg
       ORDER BY room_number
     `, params, cfg);
     res.json({ success: true, rows });

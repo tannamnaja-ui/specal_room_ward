@@ -3172,13 +3172,14 @@ function printFinanceDashboard() {
 function renderBedFullSummaryReport(data) {
   const rows = data.rows || [];
   if (rows.length === 0) return `<div class="empty-state"><div class="empty-icon">📋</div><p>ไม่พบข้อมูลในช่วงที่เลือก</p></div>`;
-  let totalNights = 0, totalFull = 0, totalClaimable = 0, totalPayable = 0, totalDiscount = 0;
+  let totalNights = 0, totalFull = 0, totalClaimable = 0, totalPayable = 0, totalDiscount = 0, totalNet = 0;
   const bodyRows = rows.map((r, i) => {
     totalNights    += (+r.nights || 0);
     totalFull      += (+r.full_price || 0);
     totalClaimable += (+r.claimable_revenue || 0);
     totalPayable   += (+r.payable_revenue || 0);
     totalDiscount  += (+r.discount_revenue || 0);
+    totalNet       += (+r.net_revenue || 0);
     return `<tr style="background:${i%2===0?'#fff':'#FAFAFA'};border-bottom:1px solid #F0F0F0">
       <td style="padding:8px 10px;font-weight:700;color:var(--primary)">${escHtml(r.room_number||'-')}</td>
       <td style="padding:8px 10px;text-align:right">${fmtBaht(r.rate_per_night)}</td>
@@ -3187,13 +3188,14 @@ function renderBedFullSummaryReport(data) {
       <td style="padding:8px 10px;text-align:right">${fmtBaht(r.claimable_revenue)}</td>
       <td style="padding:8px 10px;text-align:right;font-weight:700;color:#2E7D32">${fmtBaht(r.payable_revenue)}</td>
       <td style="padding:8px 10px;text-align:right;color:#C62828">${fmtBaht(r.discount_revenue)}</td>
+      <td style="padding:8px 10px;text-align:right;font-weight:700;color:#1565C0">${fmtBaht(r.net_revenue)}</td>
     </tr>`;
   }).join('');
   return `
     <div style="overflow-x:auto">
     <table style="width:100%;border-collapse:collapse;font-size:13px">
       <thead><tr style="background:#F5F7FA;color:#546E7A;font-size:12px;font-weight:700">
-        ${reportTh('ชื่อเตียง')}<th style="padding:10px 12px;text-align:right;border-bottom:1px solid #E0E0E0">ราคาเต็มห้องต่อคืน</th><th style="padding:10px 12px;text-align:right;border-bottom:1px solid #E0E0E0">จำนวนคืนที่นอน</th><th style="padding:10px 12px;text-align:right;border-bottom:1px solid #E0E0E0">ราคาเต็มxจำนวนคืน</th><th style="padding:10px 12px;text-align:right;border-bottom:1px solid #E0E0E0">ราคาเบิกได้</th><th style="padding:10px 12px;text-align:right;border-bottom:1px solid #E0E0E0">ราคาที่ต้องชำระเงิน</th><th style="padding:10px 12px;text-align:right;border-bottom:1px solid #E0E0E0">ราคาส่วนลด</th>
+        ${reportTh('ชื่อเตียง')}<th style="padding:10px 12px;text-align:right;border-bottom:1px solid #E0E0E0">ราคาเต็มห้องต่อคืน</th><th style="padding:10px 12px;text-align:right;border-bottom:1px solid #E0E0E0">จำนวนคืนที่นอน</th><th style="padding:10px 12px;text-align:right;border-bottom:1px solid #E0E0E0">ราคาเต็มxจำนวนคืน</th><th style="padding:10px 12px;text-align:right;border-bottom:1px solid #E0E0E0">ราคาเบิกได้</th><th style="padding:10px 12px;text-align:right;border-bottom:1px solid #E0E0E0">ราคาที่ต้องชำระเงิน</th><th style="padding:10px 12px;text-align:right;border-bottom:1px solid #E0E0E0">ราคาส่วนลด</th><th style="padding:10px 12px;text-align:right;border-bottom:1px solid #E0E0E0">รายรับ Net</th>
       </tr></thead>
       <tbody>${bodyRows}</tbody>
       <tfoot><tr style="background:#F5F7FA;font-weight:700">
@@ -3204,6 +3206,7 @@ function renderBedFullSummaryReport(data) {
         <td style="padding:8px 10px;text-align:right">${fmtBaht(totalClaimable)}</td>
         <td style="padding:8px 10px;text-align:right;color:#2E7D32">${fmtBaht(totalPayable)}</td>
         <td style="padding:8px 10px;text-align:right;color:#C62828">${fmtBaht(totalDiscount)}</td>
+        <td style="padding:8px 10px;text-align:right;color:#1565C0">${fmtBaht(totalNet)}</td>
       </tr></tfoot>
     </table>
     </div>`;
