@@ -104,13 +104,15 @@ async function ensureTablesInternal(cfg) {
   )`, [], cfg);
 
   // Migrate existing tables: add new columns if missing
+  // หมายเหตุ: bedno ไม่อยู่ในลิสต์นี้ — เป็นตารางจริงของ HIS ที่ทั้งโรงพยาบาลใช้งานสดอยู่ตลอดเวลา
+  // ALTER TABLE บนตารางนี้ (แม้จะ IF NOT EXISTS) ก็ต้องขอ ACCESS EXCLUSIVE LOCK เสมอ ถ้ามีธุรกรรมอื่นถืออยู่
+  // จะทำให้ request ที่ทำให้ ensureTables() รันครั้งแรกค้าง จึงจัดการแยกด้วย migrateBednoDateCols()
+  // ที่เช็คก่อนว่าจำเป็นต้องทำจริงไหม ค่อยยิง ALTER (ตารางของแอปเองด้านล่างนี้ไม่มีความเสี่ยงนี้ จึงยิงตรงได้)
   const alterCols = {
     bookings: ['booking_ref VARCHAR(20)', 'an VARCHAR(20)', 'ward VARCHAR(100)', 'doctor_name VARCHAR(200)', 'deposit_amount DECIMAL(10,2) DEFAULT 0', 'contact_name VARCHAR(200)', 'contact_phone VARCHAR(50)', 'priority_type VARCHAR(200)', 'waiting_list_id INT'],
     room_types: ['food_price_per_day DECIMAL(10,2) DEFAULT 0'],
     rooms: ['ward VARCHAR(100)'],
-    waiting_list: ['an VARCHAR(20)', 'ward VARCHAR(100)', 'doctor_name VARCHAR(200)', 'contact_name VARCHAR(200)', 'contact_phone VARCHAR(50)', 'priority_type VARCHAR(200)', 'roomtype_code VARCHAR(50)', 'roomtype_name VARCHAR(200)', 'check_in_date VARCHAR(50)', 'no_room_reason TEXT', 'room_type_id_2 INT', 'roomtype_name_2 VARCHAR(200)', 'room_type_id_3 INT', 'roomtype_name_3 VARCHAR(200)', 'no_pay_reason TEXT'],
-    // ตาราง bedno เป็นตารางของ HIS เอง (ไม่ใช่ตารางที่แอปนี้สร้าง) — เพิ่มฟิลวันที่+เวลาซ่อมเตียง/วันที่ใช้เป็นห้องแยกโรค
-    bedno: ['repair_start_date TIMESTAMP', 'repair_end_date TIMESTAMP', 'isolation_start_date TIMESTAMP', 'isolation_end_date TIMESTAMP']
+    waiting_list: ['an VARCHAR(20)', 'ward VARCHAR(100)', 'doctor_name VARCHAR(200)', 'contact_name VARCHAR(200)', 'contact_phone VARCHAR(50)', 'priority_type VARCHAR(200)', 'roomtype_code VARCHAR(50)', 'roomtype_name VARCHAR(200)', 'check_in_date VARCHAR(50)', 'no_room_reason TEXT', 'room_type_id_2 INT', 'roomtype_name_2 VARCHAR(200)', 'room_type_id_3 INT', 'roomtype_name_3 VARCHAR(200)', 'no_pay_reason TEXT']
   };
   for (const [tbl, cols] of Object.entries(alterCols)) {
     for (const col of cols) {
@@ -125,15 +127,41 @@ async function ensureTablesInternal(cfg) {
     }
   }
 
-  // ฟิลวันที่ซ่อม/แยกโรคของ bedno เดิมเป็น DATE (ไม่มีเวลา) — อัปเกรดเป็น TIMESTAMP ให้คำนวณจำนวนชั่วโมงได้จริง
+  await migrateBednoDateCols(cfg, isPg);
+}
+
+// เช็คสถานะคอลัมน์วันที่ซ่อม/แยกโรคของ bedno ก่อน ค่อยสั่ง ALTER เท่าที่จำเป็นจริง ๆ เท่านั้น
+// (ปกติหลังอัปเกรดสำเร็จครั้งแรกไปแล้ว ทุกการสตาร์ทครั้งต่อไปจะเจอว่าคอลัมน์มีอยู่แล้วและชนิดถูกต้องแล้ว
+// จึงไม่ยิง ALTER TABLE บน bedno เลยแม้แต่คำสั่งเดียว — ไม่ต้องขอ lock บนตารางจริงของ HIS อีก)
+async function migrateBednoDateCols(cfg, isPg) {
   const bednoDateCols = ['repair_start_date', 'repair_end_date', 'isolation_start_date', 'isolation_end_date'];
+  let existing = [];
+  try {
+    existing = await query(
+      `SELECT column_name, data_type FROM information_schema.columns WHERE table_name='bedno' AND column_name = ANY($1)`,
+      [bednoDateCols], cfg
+    );
+  } catch {
+    // เช็คไม่ได้ (เช่น mysql ที่ information_schema ต่างรูปแบบ) — ปล่อยให้ fallback ไปเช็คทีละคอลัมน์ด้านล่าง
+  }
+  const colInfo = {};
+  existing.forEach(r => { colInfo[r.column_name] = r.data_type; });
+
   for (const col of bednoDateCols) {
+    const currentType = colInfo[col];
     try {
-      if (isPg) {
+      if (currentType === undefined) {
+        // ยังไม่มีคอลัมน์นี้เลย — ต้องเพิ่มจริง (เกิดแค่ครั้งแรกที่ติดตั้ง/อัปเดต)
+        if (isPg) {
+          await query(`ALTER TABLE bedno ADD COLUMN IF NOT EXISTS ${col} TIMESTAMP`, [], cfg);
+        } else {
+          await query(`ALTER TABLE bedno ADD COLUMN ${col} TIMESTAMP`, [], cfg);
+        }
+      } else if (isPg && currentType !== 'timestamp without time zone') {
+        // มีคอลัมน์แล้วแต่ยังเป็น DATE เดิม — ต้องอัปเกรดเป็น TIMESTAMP (เกิดแค่ครั้งแรกหลังอัปเดตจากเวอร์ชันก่อนหน้า)
         await query(`ALTER TABLE bedno ALTER COLUMN ${col} TYPE TIMESTAMP USING ${col}::timestamp`, [], cfg);
-      } else {
-        await query(`ALTER TABLE bedno MODIFY COLUMN ${col} TIMESTAMP NULL`, [], cfg);
       }
+      // else: คอลัมน์มีอยู่แล้วและชนิดถูกต้องแล้ว — ข้ามไปเลย ไม่ยิง ALTER TABLE ใด ๆ บน bedno
     } catch {}
   }
 }
